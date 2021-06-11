@@ -163,6 +163,13 @@ class LITE_API Predictor {
     program_->Run();
   }
 
+  /// \brief Release all tmp tensor to compress the size of the memory pool.
+  /// The memory pool is considered to be composed of a list of chunks, if
+  /// the chunk is not occupied, it can be released.
+  ///
+  /// \return a boolean variable.
+  bool TryShrinkMemory();
+
   // Get offset-th col of feed inputs.
   lite::Tensor* GetInput(size_t offset);
   // get input by name.
@@ -234,6 +241,13 @@ class CxxPaddleApiImpl : public lite_api::PaddlePredictor {
   std::unique_ptr<const lite_api::Tensor> GetOutput(int i) const override;
 
   void Run() override;
+
+  /// \brief Release all tmp tensor to compress the size of the memory pool.
+  /// The memory pool is considered to be composed of a list of chunks, if
+  /// the chunk is not occupied, it can be released.
+  ///
+  /// \return a boolean variable.
+  bool TryShrinkMemory() override;
 
   std::shared_ptr<lite_api::PaddlePredictor> Clone() override;
 
