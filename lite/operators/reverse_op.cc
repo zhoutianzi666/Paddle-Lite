@@ -24,8 +24,12 @@ namespace operators {
 bool ReverseOpLite::CheckShape() const {
   CHECK_OR_FALSE(param_.X);
   CHECK_OR_FALSE(param_.Out);
+<<<<<<< HEAD
   for (auto axis : param_.Axis)
   {
+=======
+  for (auto axis : param_.Axis) {
+>>>>>>> reverse
     CHECK_OR_FALSE(axis < static_cast<int>((param_.X)->dims().size()));
     CHECK_OR_FALSE(axis >= static_cast<int>(-(param_.X)->dims().size()));
   }

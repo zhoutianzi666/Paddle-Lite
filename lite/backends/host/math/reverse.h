@@ -27,8 +27,13 @@ namespace math {
 
 template <typename T>
 void reverse_func(const lite::Tensor* input,
+<<<<<<< HEAD
                  std::vector<int> &axis,
                  lite::Tensor* output);
+=======
+                  std::vector<int>& axis,
+                  lite::Tensor* output);
+>>>>>>> reverse
 
 }  // namespace math
 }  // namespace host

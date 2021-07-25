@@ -31,6 +31,7 @@ class ReverseComputeTester : public arena::TestCase {
 
  public:
   ReverseComputeTester(const Place& place,
+<<<<<<< HEAD
                       const std::string& alias,
                       std::vector<int>& axis_,
                       int n,
@@ -40,11 +41,21 @@ class ReverseComputeTester : public arena::TestCase {
       : TestCase(place, alias),
         alias_(alias),
         axis_(axis_){
+=======
+                       const std::string& alias,
+                       std::vector<int>& axis_,
+                       int n,
+                       int c,
+                       int h,
+                       int w)
+      : TestCase(place, alias), alias_(alias), axis_(axis_) {
+>>>>>>> reverse
     dims_ = DDim(std::vector<int64_t>({n, c, h, w}));
   }
 
   template <typename indtype>
   void ReverseAB(indtype* x, int size, int a, int b) {
+<<<<<<< HEAD
     for (int i = 0; i < size; i += a)
     {
       for (int j = 0; j < (a/b)/2 ;j++)
@@ -55,6 +66,15 @@ class ReverseComputeTester : public arena::TestCase {
             temp = x[i + (a/b - 1 - j) * b +k];
             x[i + (a/b - 1 - j) * b +k] = x[i + j * b + k];
             x[i + j * b + k] = temp;
+=======
+    for (int i = 0; i < size; i += a) {
+      for (int j = 0; j < (a / b) / 2; j++) {
+        for (int k = 0; k < b; k++) {
+          indtype temp;
+          temp = x[i + (a / b - 1 - j) * b + k];
+          x[i + (a / b - 1 - j) * b + k] = x[i + j * b + k];
+          x[i + j * b + k] = temp;
+>>>>>>> reverse
         }
       }
     }
@@ -71,11 +91,18 @@ class ReverseComputeTester : public arena::TestCase {
     for (int i = 0; i < dims_.count(0, dims_.size()); i++)
       output_data[i] = x_data[i];
 
+<<<<<<< HEAD
     for (int i = 0;i < axis_.size(); i++)
     {
       int a = dims_.count(axis_[i], dims_.size());
       int b = dims_.count(axis_[i] + 1, dims_.size());
       ReverseAB(output_data ,dims_.count(0, dims_.size()) ,a, b);
+=======
+    for (int i = 0; i < axis_.size(); i++) {
+      int a = dims_.count(axis_[i], dims_.size());
+      int b = dims_.count(axis_[i] + 1, dims_.size());
+      ReverseAB(output_data, dims_.count(0, dims_.size()), a, b);
+>>>>>>> reverse
     }
   }
 
@@ -113,6 +140,7 @@ class ReverseComputeTester : public arena::TestCase {
 };
 
 void TestReverse(const Place& place) {
+<<<<<<< HEAD
 
   std::vector<std::vector<int>> Axis = {{0,}, {1,}, {2,}, {1,3}};
     for (std::vector<int>& axis : Axis) {
@@ -133,6 +161,35 @@ void TestReverse(const Place& place) {
           }
         }
   } 
+=======
+  std::vector<std::vector<int>> Axis = {{
+                                            0,
+                                        },
+                                        {
+                                            1,
+                                        },
+                                        {
+                                            2,
+                                        },
+                                        {1, 3}};
+  for (std::vector<int>& axis : Axis) {
+    for (int n : {1, 3}) {
+      for (int c : {3, 6}) {
+        for (int h : {9, 18}) {
+          for (int w : {9, 18}) {
+            std::vector<std::string> alias_vec{"fp32"};
+            for (std::string alias : alias_vec) {
+              std::unique_ptr<arena::TestCase> tester(
+                  new ReverseComputeTester(place, alias, axis, n, c, h, w));
+              arena::Arena arena(std::move(tester), place, 2e-5);
+              arena.TestPrecision();
+            }
+          }
+        }
+      }
+    }
+  }
+>>>>>>> reverse
 }
 
 TEST(Reverse, precision) {

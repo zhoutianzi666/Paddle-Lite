@@ -13,9 +13,15 @@
 // limitations under the License.
 
 #include "lite/kernels/host/reverse_compute.h"
+<<<<<<< HEAD
 #include "lite/backends/host/math/reverse.h"
 #include <string>
 #include <vector>
+=======
+#include <string>
+#include <vector>
+#include "lite/backends/host/math/reverse.h"
+>>>>>>> reverse
 #include "lite/core/op_registry.h"
 #include "lite/core/tensor.h"
 #include "lite/core/type_system.h"
@@ -30,9 +36,14 @@ void ReverseCompute<T>::Run() {
   auto& param = Param<operators::ReverseParam>();
   lite::Tensor* input = param.X;
   lite::Tensor* output = param.Out;
+<<<<<<< HEAD
   for (auto& axis: param.Axis)
       if (axis < 0)
         axis += input->dims().size();
+=======
+  for (auto& axis : param.Axis)
+    if (axis < 0) axis += input->dims().size();
+>>>>>>> reverse
   lite::host::math::reverse_func<T>(input, param.Axis, output);
 #ifdef LITE_WITH_PROFILE
   kernel_func_name_ = "reverse_func";
