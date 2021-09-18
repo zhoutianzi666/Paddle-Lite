@@ -24,40 +24,46 @@ limitations under the License. */
 #include <emmintrin.h>
 #endif
 
+#include "lite/backends/x86/jit/gen/jitcode.h"
+
 namespace paddle {
 namespace lite {
 namespace x86 {
 namespace math {
 
-void conv_direct_3x3s2(const float* i_data,
-                       const float* trans_weight,
-                       int bs,
-                       int ic,
+struct  jit_param
+{
+  const float* input_row_address;
+  const float* kernel_row_address;
+  float* output_row_address;
+};
+
+conv_direct_3x3s2Code ::conv_direct_3x3s2Code
+                      (int ic,
                        int ih,
                        int iw,
                        int oc,
                        int oc_expand,
-                       float* o_data,
                        int oh,
                        int ow,
                        int ph,
-                       int pw,
-                       const float* bias,
-                       lite_api::ActivationType active_type) {
+                       int pw): Xbyak::CodeGenerator(8192, Xbyak::AutoGrow)
+{
+
   constexpr int ww = 3;
   constexpr int wh = 3;
-  constexpr int strideh = 2;
-  constexpr int stridew = 2;
+  //constexpr int strideh = 2;
+  //constexpr int stridew = 2;
 
 #ifdef __AVX__
   constexpr int BLOCK = 8;
-  // the sliding window is 5x7 and can obtain 2x3 results！ for AVX
-  constexpr int window_h = 5;
+  // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
+  constexpr int window_h = 3;
   constexpr int window_w = 7;
 
 #else
   constexpr int BLOCK = 4;
-  constexpr int window_h = 5;
+  constexpr int window_h = 3;
   constexpr int window_w = 7;
 #endif
 
@@ -70,15 +76,179 @@ void conv_direct_3x3s2(const float* i_data,
   if (ph == 0 && pw == 0) {
     // 4 is the stride_h of sliding window
     // 6 is the stride_w of sliding window
-    new_ih = (ih - window_h) / 4 * 4;
+    new_ih = (ih - window_h) / 2 * 2;
     new_iw = (iw - window_w) / 6 * 6;
     new_ih_start = 0;
     new_iw_start = 0;
   } else if (ph == 1 && pw == 1) {
+    new_ih = (ih - window_h - 1) / 2 * 2 + 1;
     new_iw = (iw - window_w - 1) / 6 * 6 + 1;
-    new_ih = (ih - window_h - 1) / 4 * 4 + 1;
+
     new_ih_start = 1;
     new_iw_start = 1;
+  } else {
+    LOG(FATAL) << "[X86] conv_direct only support 3x3s2 with padding = 0 or 1";
+  }
+
+  // // The number of channels of convolution kernel
+  // // and the number of input channels are always the same !
+  int wc = ic;
+
+  int ihw = ih * iw;
+  int wchw = wc * wh * ww;
+  int whwB = wh * ww * BLOCK;
+  int ohw = oh * ow;
+ 
+  using reg64_t = const Xbyak::Reg64;
+
+  push(rcx);
+  push(r8);
+  push(r9);
+  push(r10);
+
+  reg64_t iw_iter  = rcx;
+  reg64_t input_row_address_xb  = r8; mov(input_row_address_xb , ptr[rdi + 8 * 0]);
+  reg64_t kernel_address_xb = r9;     mov(kernel_address_xb , ptr[rdi + 8 * 1]);
+  reg64_t output_row_address_xb = r10;mov(output_row_address_xb, ptr[rdi + 8 * 2]);
+  // 上面三个是非常重要的东西
+  // 其中input_start_address是从new_ih_start开始的哦!
+  // output_start_address_xb肯定不是从0开始的哈！
+
+  xor_(iw_iter, iw_iter);// 从new_iw_start开始，每次加上6哦！
+  add(iw_iter, new_iw_start);
+  int temp;
+  Xbyak::Label iw_loop;
+  L(iw_loop);
+  {
+
+for (int oc_gi = 0; oc_gi < oc_expand; oc_gi += BLOCK) {
+      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
+      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
+      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
+      vxorps(res0,res0,res0);
+      vxorps(res1,res1,res1);
+      vxorps(res2,res2,res2);
+    }
+
+// 这里开始处理这6个输入数字和卷积核心的卷积！
+for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先展开一下吧！
+  for (int ww_i = 0; ww_i < ww; ww_i ++){// 卷积核有三列,但是我每次只拿一颗！
+    for (int ic_i = 0; ic_i < wc; ic_i++) {// inchannel哦！
+
+    // get three input data
+    Xbyak::Ymm input00 = ymm12;
+    Xbyak::Ymm input02 = ymm13;
+    Xbyak::Ymm input04 = ymm14;
+    temp = (ww_i + 0 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    vbroadcastss(input00, ptr[input_row_address_xb + temp]);
+    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    vbroadcastss(input02, ptr[input_row_address_xb + temp]);
+    temp = (ww_i + 4 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    vbroadcastss(input04, ptr[input_row_address_xb + temp]);
+
+     for (int oc_gi = 0; oc_gi < oc_expand; oc_gi += BLOCK) {
+
+      //  接着搞一个卷积核
+      Xbyak::Ymm kernel = ymm15;
+      temp = (oc_gi * wchw + ic_i * whwB + ww_i * BLOCK + wh_i * ww * BLOCK) * sizeof(float);
+      vmovups(kernel, ptr[kernel_address_xb + temp]);
+
+      // 接着获得3个输出结果
+      // 拿着ymm15和3个输入搞起来！
+      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
+      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
+      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
+      vfmadd231ps(res0, kernel, input00);
+      vfmadd231ps(res1, kernel, input02);
+      vfmadd231ps(res2, kernel, input04);
+    }
+  }
+ }
+}
+    // 这里需要store输出了哦！12个输出!
+for (int oc_gi = 0; oc_gi < oc_expand; oc_gi += BLOCK) {
+      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
+      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
+      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
+      
+      temp = (oc_gi * ohw + 0 * BLOCK) * sizeof(float);
+      vmovups(ptr[output_row_address_xb + temp], res0);
+      temp = (oc_gi * ohw + 1 * BLOCK) * sizeof(float);
+      vmovups(ptr[output_row_address_xb + temp], res1);
+      temp = (oc_gi * ohw + 2 * BLOCK) * sizeof(float);
+      vmovups(ptr[output_row_address_xb + temp], res2);
+    }
+
+    add(input_row_address_xb, 6 * sizeof(float));
+    add(output_row_address_xb, 3 * BLOCK * sizeof(float));
+    add(iw_iter, 6);
+    cmp(iw_iter, new_iw);
+    jle(iw_loop,T_NEAR);
+  }
+
+pop(r10);
+pop(r9);
+pop(r8);
+pop(rcx);
+ret();
+
+}
+
+void conv_direct_3x3s2Code::run
+                      (const float* i_data,
+                      const float* trans_weight,
+                      int bs,
+                       int ic,
+                       int ih,
+                       int iw,
+                       int oc,
+                       int oc_expand,
+                       float* o_data,
+                       float* trans_out,
+                       int oh,
+                       int ow,
+                       int ph,
+                       int pw,
+                       const float* bias,
+                       lite_api::ActivationType active_type)
+{
+  constexpr int ww = 3;
+  constexpr int wh = 3;
+  constexpr int strideh = 2;
+  constexpr int stridew = 2;
+
+#ifdef __AVX__
+  constexpr int BLOCK = 8;
+  // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
+  constexpr int window_h = 3;
+  constexpr int window_w = 7;
+
+#else
+  constexpr int BLOCK = 4;
+  constexpr int window_h = 3;
+  constexpr int window_w = 7;
+#endif
+
+  // The maximum value of the upper left corner of the
+  // sliding window in h dimension
+  int new_ih;
+  int new_iw;
+  int new_ih_start;
+  int new_iw_start;
+  if (ph == 0 && pw == 0) {
+    // 4 is the stride_h of sliding window
+    // 6 is the stride_w of sliding window
+    new_ih = (ih - window_h) / 2 * 2;
+    new_iw = (iw - window_w) / 6 * 6;
+    new_ih_start = 0;
+    new_iw_start = 0;
+
+  } else if (ph == 1 && pw == 1) {
+    new_ih = (ih - window_h - 1) / 2 * 2 + 1;
+    new_iw = (iw - window_w - 1) / 6 * 6 + 1;
+    new_ih_start = 1;
+    new_iw_start = 1;
+    
   } else {
     LOG(FATAL) << "[X86] conv_direct only support 3x3s2 with padding = 0 or 1";
   }
@@ -90,8 +260,8 @@ void conv_direct_3x3s2(const float* i_data,
   int o_left = (new_iw_start + pw) / 2;
   int o_right = (new_iw + pw) / 2 + 3;
   int o_upper = (new_ih_start + ph) / 2;
-  int o_down = (new_ih + ph) / 2 + 2;
-
+  int o_down = (new_ih + ph) / 2 + 1;
+  //std::cout << o_right << std::endl;
   // The number of channels of convolution kernel
   // and the number of input channels are always the same !
   int wc = ic;
@@ -102,16 +272,9 @@ void conv_direct_3x3s2(const float* i_data,
   int whwB = wh * ww * BLOCK;
   int ohw = oh * ow;
   int ochw = oc * oh * ow;
-  int owB = ow * BLOCK;
-  int trans_out_size = oc_expand * ohw;
-
-  // holds the intermediate  HWC output result
-  float* trans_out = static_cast<float*>(
-      TargetMalloc(TARGET(kX86), sizeof(float) * trans_out_size));
 
   // fetch bs_i th input feature map
   for (int bs_i = 0; bs_i < bs; bs_i++) {
-    memset(trans_out, 0, sizeof(float) * trans_out_size);
 
     // Handle upper boundary！
     // We dealt with the boundary from the beginning
@@ -139,10 +302,16 @@ void conv_direct_3x3s2(const float* i_data,
                 trans_weight + oc_gi * wchw +
                 ic_i * whwB;  // the first kernel's address in this BLOCK
             float* output_address =
-                trans_out + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
+                trans_out + bs_i * ochw + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
 
 // Let's start the convolution of 3x3!
 #ifdef __AVX__
+
+// Xbyak
+            // Xbyak::Ymm res_xb = ymm0;
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(res_xb, yword[pointer]);
+
             __m256 res = _mm256_loadu_ps(output_address);
 #else
             __m128 res = _mm_loadu_ps(output_address);
@@ -157,9 +326,16 @@ void conv_direct_3x3s2(const float* i_data,
                 const float* input_address =
                     input_start_address + new_ih_i * iw + new_iw_i;
 #ifdef __AVX__
+                // mov(pointer ,(uint64_t)(input_address));
+                // Xbyak::Ymm input_xb = ymm1;
+                // vbroadcastss(input_xb, dword[pointer]);
+                // mov(pointer, (uint64_t)(kernel_start_address + (i * 3 + j) * BLOCK));
+                // Xbyak::Ymm w_xb = ymm2;
+                // vmovups(w_xb, yword[pointer]);
+                // vfmadd231ps(res_xb, input_xb, w_xb);
+
                 __m256 input = _mm256_set1_ps(*input_address);
-                __m256 w =
-                    _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
+                __m256 w = _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
                 res = _mm256_fmadd_ps(input, w, res);
 #else
                 __m128 input = _mm_set1_ps(*input_address);
@@ -169,6 +345,10 @@ void conv_direct_3x3s2(const float* i_data,
 #endif
               }
 #ifdef __AVX__
+            
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(yword[pointer], res_xb);
+            
             _mm256_storeu_ps(output_address, res);
 #else
             _mm_storeu_ps(output_address, res);
@@ -197,10 +377,16 @@ void conv_direct_3x3s2(const float* i_data,
             const float* kernel_start_address =
                 trans_weight + oc_gi * wchw +
                 ic_i * whwB;  // the first kernel's address in this BLOCK
-            float* output_address =
-                trans_out + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
+            float* output_address = 
+                trans_out + bs_i * ochw + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
 
 #ifdef __AVX__
+
+// Xbyak
+            // Xbyak::Ymm res_xb = ymm0;
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(res_xb, yword[pointer]);
+
             __m256 res = _mm256_loadu_ps(output_address);
 #else
             __m128 res = _mm_loadu_ps(output_address);
@@ -215,6 +401,15 @@ void conv_direct_3x3s2(const float* i_data,
                 const float* input_address =
                     input_start_address + new_ih_i * iw + new_iw_i;
 #ifdef __AVX__
+
+                // mov(pointer ,(uint64_t)(input_address));
+                // Xbyak::Ymm input_xb = ymm1;
+                // vbroadcastss(input_xb, dword[pointer]);
+                // mov(pointer, (uint64_t)(kernel_start_address + (i * 3 + j) * BLOCK));
+                // Xbyak::Ymm w_xb = ymm2;
+                // vmovups(w_xb, yword[pointer]);
+                // vfmadd231ps(res_xb, input_xb, w_xb);
+
                 __m256 input = _mm256_set1_ps(*input_address);
                 __m256 w =
                     _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
@@ -227,6 +422,10 @@ void conv_direct_3x3s2(const float* i_data,
 #endif
               }
 #ifdef __AVX__
+
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(yword[pointer], res_xb);
+
             _mm256_storeu_ps(output_address, res);
 #else
             _mm_storeu_ps(output_address, res);
@@ -258,9 +457,15 @@ void conv_direct_3x3s2(const float* i_data,
                 trans_weight + oc_gi * wchw +
                 ic_i * whwB;  // the first kernel's address in this BLOCK
             float* output_address =
-                trans_out + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
+                trans_out + bs_i * ochw + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
 
 #ifdef __AVX__
+
+// Xbyak
+            // Xbyak::Ymm res_xb = ymm0;
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(res_xb, yword[pointer]);
+
             __m256 res = _mm256_loadu_ps(output_address);
 #else
             __m128 res = _mm_loadu_ps(output_address);
@@ -275,6 +480,17 @@ void conv_direct_3x3s2(const float* i_data,
                 const float* input_address =
                     input_start_address + new_ih_i * iw + new_iw_i;
 #ifdef __AVX__
+
+
+                // mov(pointer ,(uint64_t)(input_address));
+                // Xbyak::Ymm input_xb = ymm1;
+                // vbroadcastss(input_xb, dword[pointer]);
+                // mov(pointer, (uint64_t)(kernel_start_address + (i * 3 + j) * BLOCK));
+                // Xbyak::Ymm w_xb = ymm2;
+                // vmovups(w_xb, yword[pointer]);
+                // vfmadd231ps(res_xb, input_xb, w_xb);
+
+
                 __m256 input = _mm256_set1_ps(*input_address);
                 __m256 w =
                     _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
@@ -287,6 +503,10 @@ void conv_direct_3x3s2(const float* i_data,
 #endif
               }
 #ifdef __AVX__
+            
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(yword[pointer], res_xb);
+
             _mm256_storeu_ps(output_address, res);
 #else
             _mm_storeu_ps(output_address, res);
@@ -295,6 +515,7 @@ void conv_direct_3x3s2(const float* i_data,
         }
       }
     }
+
     // Handle right boundary！
     for (int oh_i = 0; oh_i < oh; oh_i++) {
       if ((oh_i >= 0 && oh_i < o_upper) || (oh_i >= o_down && oh_i < oh))
@@ -317,9 +538,15 @@ void conv_direct_3x3s2(const float* i_data,
                 trans_weight + oc_gi * wchw +
                 ic_i * whwB;  // the first kernel's address in this BLOCK
             float* output_address =
-                trans_out + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
+                trans_out + bs_i * ochw + oc_gi * ohw + oh_i * ow * BLOCK + ow_i * BLOCK;
 
 #ifdef __AVX__
+
+// Xbyak
+            // Xbyak::Ymm res_xb = ymm0;
+            // mov(pointer ,(uint64_t)(output_address));
+            // vmovups(res_xb, yword[pointer]);
+
             __m256 res = _mm256_loadu_ps(output_address);
 #else
             __m128 res = _mm_loadu_ps(output_address);
@@ -334,6 +561,16 @@ void conv_direct_3x3s2(const float* i_data,
                 const float* input_address =
                     input_start_address + new_ih_i * iw + new_iw_i;
 #ifdef __AVX__
+
+                // mov(pointer ,(uint64_t)(input_address));
+                // Xbyak::Ymm input_xb = ymm1;
+                // vbroadcastss(input_xb, dword[pointer]);
+                // mov(pointer, (uint64_t)(kernel_start_address + (i * 3 + j) * BLOCK));
+                // Xbyak::Ymm w_xb = ymm2;
+                // vmovups(w_xb, yword[pointer]);
+                // vfmadd231ps(res_xb, input_xb, w_xb);
+
+
                 __m256 input = _mm256_set1_ps(*input_address);
                 __m256 w =
                     _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
@@ -346,6 +583,10 @@ void conv_direct_3x3s2(const float* i_data,
 #endif
               }
 #ifdef __AVX__
+            
+            //mov(pointer ,(uint64_t)(output_address));
+            //vmovups(yword[pointer], res_xb);
+
             _mm256_storeu_ps(output_address, res);
 #else
             _mm_storeu_ps(output_address, res);
@@ -355,381 +596,60 @@ void conv_direct_3x3s2(const float* i_data,
       }
     }
 
-    // fetch the ic_i th channel in this input feature map
-    for (int ic_i = 0; ic_i < wc; ic_i++) {
-      const float* input_start_address = i_data + bs_i * ichw + ic_i * ihw;
 
-      // fetch oc_gi th group kernel,there are BLOCK kernels
-      // in it. we only need to deal with its ic_i channel !
-      // oc_gi is oc_group_i !
-      for (int oc_gi = 0; oc_gi < oc_expand; oc_gi += BLOCK) {
-        // Now, we need compute the conv of one planar feature map and BLOCK
-        // planar kernel
-        // the  planar feature map's starting address
-        const float* kernel_start_address =
-            trans_weight + oc_gi * wchw +
-            ic_i * whwB;  // the first kernel's address in this BLOCK
-        float* output_start_address = trans_out + oc_gi * ohw;
 
-/* So far, we have dealt with the special boundary,and now we begin to deal with
- * the general situation */
+/*-----------------------new way--------------------------------------*/
 
-// prefetch the 3x3 conv kernel outside the below two Nested loop !
+    const float* input_row_address = i_data + bs_i * ichw + new_iw_start + new_ih_start * iw;
+    float* output_row_address = trans_out + (new_ih_start + ph) / 2 * ow * BLOCK + (new_iw_start + pw) / 2 * BLOCK;
+
+    for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 2, 
+                                   output_row_address += ow * BLOCK,
+                                   input_row_address += 2 * iw) {
+
+        jit_param param;
+        param.input_row_address = input_row_address;
+        param.kernel_row_address = trans_weight;
+        param.output_row_address = output_row_address;
+        
+        void (*f)(jit_param*) = getCode<void (*)(jit_param*)>();
+        f(&param);
+  }
+}
+
+}
+
+void conv_direct_3x3s2_tranpose_out(int bs,
+                       int oc,
+                       float* o_data,
+                       float* trans_out,
+                       int oh,
+                       int ow,
+                       const float* bias,
+                       lite_api::ActivationType active_type){ 
+
 #ifdef __AVX__
-
-        // Take out 9 weight values to the register
-        __m256 w00 = _mm256_loadu_ps(kernel_start_address + 0 * BLOCK);
-        __m256 w01 = _mm256_loadu_ps(kernel_start_address + 1 * BLOCK);
-        __m256 w02 = _mm256_loadu_ps(kernel_start_address + 2 * BLOCK);
-        __m256 w10 = _mm256_loadu_ps(kernel_start_address + 3 * BLOCK);
-        __m256 w11 = _mm256_loadu_ps(kernel_start_address + 4 * BLOCK);
-        __m256 w12 = _mm256_loadu_ps(kernel_start_address + 5 * BLOCK);
-        __m256 w20 = _mm256_loadu_ps(kernel_start_address + 6 * BLOCK);
-        __m256 w21 = _mm256_loadu_ps(kernel_start_address + 7 * BLOCK);
-        __m256 w22 = _mm256_loadu_ps(kernel_start_address + 8 * BLOCK);
+  constexpr int BLOCK = 8;
 #else
-        // Take out 9 weight values to the register
-        __m128 w00 = _mm_loadu_ps(kernel_start_address + 0 * BLOCK);
-        __m128 w01 = _mm_loadu_ps(kernel_start_address + 1 * BLOCK);
-        __m128 w02 = _mm_loadu_ps(kernel_start_address + 2 * BLOCK);
-        __m128 w10 = _mm_loadu_ps(kernel_start_address + 3 * BLOCK);
-        __m128 w11 = _mm_loadu_ps(kernel_start_address + 4 * BLOCK);
-        __m128 w12 = _mm_loadu_ps(kernel_start_address + 5 * BLOCK);
-        __m128 w20 = _mm_loadu_ps(kernel_start_address + 6 * BLOCK);
-        __m128 w21 = _mm_loadu_ps(kernel_start_address + 7 * BLOCK);
-        __m128 w22 = _mm_loadu_ps(kernel_start_address + 8 * BLOCK);
-
+  constexpr int BLOCK = 4;
 #endif
 
-        // one sliding window cangenerate 2x3 results
-        // below is the two line's first address the first window generated!
-        float* output_address0 = output_start_address +
-                                 (new_ih_start + ph) / 2 * ow * BLOCK +
-                                 (new_iw_start + pw) / 2 * BLOCK;
-        float* output_address1 = output_address0 + ow * BLOCK;
+  int ohw = oh * ow;
+  int ochw = oc * oh * ow;
+  int owB = ow * BLOCK;
 
-        for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 4,
-                 output_address0 += 2 * ow * BLOCK,
-                 output_address1 += 2 * ow * BLOCK) {
-          // iv is (ih_i~ ih_i + 4)row's first address !
-          const float* row0 = input_start_address + ih_i * iw;
-          const float* row1 = row0 + 1 * iw;
-          const float* row2 = row0 + 2 * iw;
-          const float* row3 = row0 + 3 * iw;
-          const float* row4 = row0 + 4 * iw;
-          // The following is the starting address of
-          // each line of the sliding window
-          const float* iv0 = row0 + new_iw_start;
-          const float* iv1 = row1 + new_iw_start;
-          const float* iv2 = row2 + new_iw_start;
-          const float* iv3 = row3 + new_iw_start;
-          const float* iv4 = row4 + new_iw_start;
 
-          // the first line output's address
-          float* output_address00 = output_address0 + BLOCK * 0;
-          float* output_address01 = output_address0 + BLOCK * 1;
-          float* output_address02 = output_address0 + BLOCK * 2;
-          // the second line output's address
-          float* output_address10 = output_address1 + BLOCK * 0;
-          float* output_address11 = output_address1 + BLOCK * 1;
-          float* output_address12 = output_address1 + BLOCK * 2;
+// we always assume oc % BLOCK == 0!
+// convert trans_out(HWC) to o_data(CHW)!
+// fetch bs_i th input feature map
 
-          for (int iw_i = new_iw_start; iw_i <= new_iw; iw_i += 6,
-                   iv0 += 6,
-                   iv1 += 6,
-                   iv2 += 6,
-                   iv3 += 6,
-                   iv4 += 6,
-                   output_address00 += 3 * BLOCK,
-                   output_address01 += 3 * BLOCK,
-                   output_address02 += 3 * BLOCK,
-                   output_address10 += 3 * BLOCK,
-                   output_address11 += 3 * BLOCK,
-                   output_address12 += 3 * BLOCK) {
-#ifdef __AVX__
-
-            // Sliding windows can produce 2x3 results, I now create them
-            __m256 res00 = _mm256_loadu_ps(output_address00);
-            __m256 res01 = _mm256_loadu_ps(output_address01);
-            __m256 res02 = _mm256_loadu_ps(output_address02);
-            __m256 res10 = _mm256_loadu_ps(output_address10);
-            __m256 res11 = _mm256_loadu_ps(output_address11);
-            __m256 res12 = _mm256_loadu_ps(output_address12);
-
-            // I have used 15 registers, and there are one left!
-            // but I will use six reg to hold input data to generate outputs !
-            // iv0: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res01
-            // iv4: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res01
-            __m256 input00 = _mm256_set1_ps(iv0[0]);
-            __m256 input02 = _mm256_set1_ps(iv0[2]);
-            __m256 input04 = _mm256_set1_ps(iv0[4]);
-            __m256 input10 = _mm256_set1_ps(iv4[0]);
-            __m256 input12 = _mm256_set1_ps(iv4[2]);
-            __m256 input14 = _mm256_set1_ps(iv4[4]);
-            res00 = _mm256_fmadd_ps(input00, w00, res00);
-            res01 = _mm256_fmadd_ps(input02, w00, res01);
-            res02 = _mm256_fmadd_ps(input04, w00, res02);
-            res10 = _mm256_fmadd_ps(input10, w20, res10);
-            res11 = _mm256_fmadd_ps(input12, w20, res11);
-            res12 = _mm256_fmadd_ps(input14, w20, res12);
-            input00 = _mm256_set1_ps(iv0[6]);
-            input10 = _mm256_set1_ps(iv4[6]);
-            res00 = _mm256_fmadd_ps(input02, w02, res00);
-            res01 = _mm256_fmadd_ps(input04, w02, res01);
-            res02 = _mm256_fmadd_ps(input00, w02, res02);
-            res10 = _mm256_fmadd_ps(input12, w22, res10);
-            res11 = _mm256_fmadd_ps(input14, w22, res11);
-            res12 = _mm256_fmadd_ps(input10, w22, res12);
-            input00 = _mm256_set1_ps(iv0[1]);
-            input02 = _mm256_set1_ps(iv0[3]);
-            input04 = _mm256_set1_ps(iv0[5]);
-            input10 = _mm256_set1_ps(iv4[1]);
-            input12 = _mm256_set1_ps(iv4[3]);
-            input14 = _mm256_set1_ps(iv4[5]);
-            res00 = _mm256_fmadd_ps(input00, w01, res00);
-            res01 = _mm256_fmadd_ps(input02, w01, res01);
-            res02 = _mm256_fmadd_ps(input04, w01, res02);
-            res10 = _mm256_fmadd_ps(input10, w21, res10);
-            res11 = _mm256_fmadd_ps(input12, w21, res11);
-            res12 = _mm256_fmadd_ps(input14, w21, res12);
-
-            // iv1: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res02
-            // iv3: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res10
-            // 2,3,4 is Responsible for res11
-            // 4,5,6 is Responsible for res12
-            input00 = _mm256_set1_ps(iv1[0]);
-            input02 = _mm256_set1_ps(iv1[2]);
-            input04 = _mm256_set1_ps(iv1[4]);
-            input10 = _mm256_set1_ps(iv3[0]);
-            input12 = _mm256_set1_ps(iv3[2]);
-            input14 = _mm256_set1_ps(iv3[4]);
-            res00 = _mm256_fmadd_ps(input00, w10, res00);
-            res01 = _mm256_fmadd_ps(input02, w10, res01);
-            res02 = _mm256_fmadd_ps(input04, w10, res02);
-            res10 = _mm256_fmadd_ps(input10, w10, res10);
-            res11 = _mm256_fmadd_ps(input12, w10, res11);
-            res12 = _mm256_fmadd_ps(input14, w10, res12);
-            input00 = _mm256_set1_ps(iv1[6]);
-            input10 = _mm256_set1_ps(iv3[6]);
-            res00 = _mm256_fmadd_ps(input02, w12, res00);
-            res01 = _mm256_fmadd_ps(input04, w12, res01);
-            res02 = _mm256_fmadd_ps(input00, w12, res02);
-            res10 = _mm256_fmadd_ps(input12, w12, res10);
-            res11 = _mm256_fmadd_ps(input14, w12, res11);
-            res12 = _mm256_fmadd_ps(input10, w12, res12);
-            input00 = _mm256_set1_ps(iv1[1]);
-            input02 = _mm256_set1_ps(iv1[3]);
-            input04 = _mm256_set1_ps(iv1[5]);
-            input10 = _mm256_set1_ps(iv3[1]);
-            input12 = _mm256_set1_ps(iv3[3]);
-            input14 = _mm256_set1_ps(iv3[5]);
-            res00 = _mm256_fmadd_ps(input00, w11, res00);
-            res01 = _mm256_fmadd_ps(input02, w11, res01);
-            res02 = _mm256_fmadd_ps(input04, w11, res02);
-            res10 = _mm256_fmadd_ps(input10, w11, res10);
-            res11 = _mm256_fmadd_ps(input12, w11, res11);
-            res12 = _mm256_fmadd_ps(input14, w11, res12);
-
-            // iv2: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res02
-            // iv2: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res10
-            // 2,3,4 is Responsible for res11
-            // 4,5,6 is Responsible for res12
-            input00 = _mm256_set1_ps(iv2[0]);
-            input02 = _mm256_set1_ps(iv2[2]);
-            input04 = _mm256_set1_ps(iv2[4]);
-            res00 = _mm256_fmadd_ps(input00, w20, res00);
-            res01 = _mm256_fmadd_ps(input02, w20, res01);
-            res02 = _mm256_fmadd_ps(input04, w20, res02);
-            res10 = _mm256_fmadd_ps(input00, w00, res10);
-            res11 = _mm256_fmadd_ps(input02, w00, res11);
-            res12 = _mm256_fmadd_ps(input04, w00, res12);
-            input00 = _mm256_set1_ps(iv2[6]);
-            res00 = _mm256_fmadd_ps(input02, w22, res00);
-            res01 = _mm256_fmadd_ps(input04, w22, res01);
-            res02 = _mm256_fmadd_ps(input00, w22, res02);
-            res10 = _mm256_fmadd_ps(input02, w02, res10);
-            res11 = _mm256_fmadd_ps(input04, w02, res11);
-            res12 = _mm256_fmadd_ps(input00, w02, res12);
-            input00 = _mm256_set1_ps(iv2[1]);
-            input02 = _mm256_set1_ps(iv2[3]);
-            input04 = _mm256_set1_ps(iv2[5]);
-            res00 = _mm256_fmadd_ps(input00, w21, res00);
-            res01 = _mm256_fmadd_ps(input02, w21, res01);
-            res02 = _mm256_fmadd_ps(input04, w21, res02);
-            res10 = _mm256_fmadd_ps(input00, w01, res10);
-            res11 = _mm256_fmadd_ps(input02, w01, res11);
-            res12 = _mm256_fmadd_ps(input04, w01, res12);
-
-            // Store them back
-            _mm256_storeu_ps(output_address00, res00);
-            _mm256_storeu_ps(output_address01, res01);
-            _mm256_storeu_ps(output_address02, res02);
-            _mm256_storeu_ps(output_address10, res10);
-            _mm256_storeu_ps(output_address11, res11);
-            _mm256_storeu_ps(output_address12, res12);
-
-#else
-            // Sliding windows can produce 2x3 results, I now create them
-            __m128 res00 = _mm_loadu_ps(output_address00);
-            __m128 res01 = _mm_loadu_ps(output_address01);
-            __m128 res02 = _mm_loadu_ps(output_address02);
-            __m128 res10 = _mm_loadu_ps(output_address10);
-            __m128 res11 = _mm_loadu_ps(output_address11);
-            __m128 res12 = _mm_loadu_ps(output_address12);
-
-            // I have used 15 registers, and there are one left!
-            // but I will use six reg to hold input data to generate outputs !
-            // iv0: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res01
-            // iv4: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res01
-            __m128 input00 = _mm_set1_ps(iv0[0]);
-            __m128 input02 = _mm_set1_ps(iv0[2]);
-            __m128 input04 = _mm_set1_ps(iv0[4]);
-            __m128 input10 = _mm_set1_ps(iv4[0]);
-            __m128 input12 = _mm_set1_ps(iv4[2]);
-            __m128 input14 = _mm_set1_ps(iv4[4]);
-            res00 = _mm_fmadd_ps(input00, w00, res00);
-            res01 = _mm_fmadd_ps(input02, w00, res01);
-            res02 = _mm_fmadd_ps(input04, w00, res02);
-            res10 = _mm_fmadd_ps(input10, w20, res10);
-            res11 = _mm_fmadd_ps(input12, w20, res11);
-            res12 = _mm_fmadd_ps(input14, w20, res12);
-            input00 = _mm_set1_ps(iv0[6]);
-            input10 = _mm_set1_ps(iv4[6]);
-            res00 = _mm_fmadd_ps(input02, w02, res00);
-            res01 = _mm_fmadd_ps(input04, w02, res01);
-            res02 = _mm_fmadd_ps(input00, w02, res02);
-            res10 = _mm_fmadd_ps(input12, w22, res10);
-            res11 = _mm_fmadd_ps(input14, w22, res11);
-            res12 = _mm_fmadd_ps(input10, w22, res12);
-            input00 = _mm_set1_ps(iv0[1]);
-            input02 = _mm_set1_ps(iv0[3]);
-            input04 = _mm_set1_ps(iv0[5]);
-            input10 = _mm_set1_ps(iv4[1]);
-            input12 = _mm_set1_ps(iv4[3]);
-            input14 = _mm_set1_ps(iv4[5]);
-            res00 = _mm_fmadd_ps(input00, w01, res00);
-            res01 = _mm_fmadd_ps(input02, w01, res01);
-            res02 = _mm_fmadd_ps(input04, w01, res02);
-            res10 = _mm_fmadd_ps(input10, w21, res10);
-            res11 = _mm_fmadd_ps(input12, w21, res11);
-            res12 = _mm_fmadd_ps(input14, w21, res12);
-
-            // iv1: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res02
-            // iv3: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res10
-            // 2,3,4 is Responsible for res11
-            // 4,5,6 is Responsible for res12
-            input00 = _mm_set1_ps(iv1[0]);
-            input02 = _mm_set1_ps(iv1[2]);
-            input04 = _mm_set1_ps(iv1[4]);
-            input10 = _mm_set1_ps(iv3[0]);
-            input12 = _mm_set1_ps(iv3[2]);
-            input14 = _mm_set1_ps(iv3[4]);
-            res00 = _mm_fmadd_ps(input00, w10, res00);
-            res01 = _mm_fmadd_ps(input02, w10, res01);
-            res02 = _mm_fmadd_ps(input04, w10, res02);
-            res10 = _mm_fmadd_ps(input10, w10, res10);
-            res11 = _mm_fmadd_ps(input12, w10, res11);
-            res12 = _mm_fmadd_ps(input14, w10, res12);
-            input00 = _mm_set1_ps(iv1[6]);
-            input10 = _mm_set1_ps(iv3[6]);
-            res00 = _mm_fmadd_ps(input02, w12, res00);
-            res01 = _mm_fmadd_ps(input04, w12, res01);
-            res02 = _mm_fmadd_ps(input00, w12, res02);
-            res10 = _mm_fmadd_ps(input12, w12, res10);
-            res11 = _mm_fmadd_ps(input14, w12, res11);
-            res12 = _mm_fmadd_ps(input10, w12, res12);
-            input00 = _mm_set1_ps(iv1[1]);
-            input02 = _mm_set1_ps(iv1[3]);
-            input04 = _mm_set1_ps(iv1[5]);
-            input10 = _mm_set1_ps(iv3[1]);
-            input12 = _mm_set1_ps(iv3[3]);
-            input14 = _mm_set1_ps(iv3[5]);
-            res00 = _mm_fmadd_ps(input00, w11, res00);
-            res01 = _mm_fmadd_ps(input02, w11, res01);
-            res02 = _mm_fmadd_ps(input04, w11, res02);
-            res10 = _mm_fmadd_ps(input10, w11, res10);
-            res11 = _mm_fmadd_ps(input12, w11, res11);
-            res12 = _mm_fmadd_ps(input14, w11, res12);
-
-            // iv2: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res00
-            // 2,3,4 is Responsible for res01
-            // 4,5,6 is Responsible for res02
-            // iv2: 0 1 2 3 4 5 6
-            // 0,1,2 is Responsible for res10
-            // 2,3,4 is Responsible for res11
-            // 4,5,6 is Responsible for res12
-            input00 = _mm_set1_ps(iv2[0]);
-            input02 = _mm_set1_ps(iv2[2]);
-            input04 = _mm_set1_ps(iv2[4]);
-            res00 = _mm_fmadd_ps(input00, w20, res00);
-            res01 = _mm_fmadd_ps(input02, w20, res01);
-            res02 = _mm_fmadd_ps(input04, w20, res02);
-            res10 = _mm_fmadd_ps(input00, w00, res10);
-            res11 = _mm_fmadd_ps(input02, w00, res11);
-            res12 = _mm_fmadd_ps(input04, w00, res12);
-            input00 = _mm_set1_ps(iv2[6]);
-            res00 = _mm_fmadd_ps(input02, w22, res00);
-            res01 = _mm_fmadd_ps(input04, w22, res01);
-            res02 = _mm_fmadd_ps(input00, w22, res02);
-            res10 = _mm_fmadd_ps(input02, w02, res10);
-            res11 = _mm_fmadd_ps(input04, w02, res11);
-            res12 = _mm_fmadd_ps(input00, w02, res12);
-            input00 = _mm_set1_ps(iv2[1]);
-            input02 = _mm_set1_ps(iv2[3]);
-            input04 = _mm_set1_ps(iv2[5]);
-            res00 = _mm_fmadd_ps(input00, w21, res00);
-            res01 = _mm_fmadd_ps(input02, w21, res01);
-            res02 = _mm_fmadd_ps(input04, w21, res02);
-            res10 = _mm_fmadd_ps(input00, w01, res10);
-            res11 = _mm_fmadd_ps(input02, w01, res11);
-            res12 = _mm_fmadd_ps(input04, w01, res12);
-
-            // Store them back
-            _mm_storeu_ps(output_address00, res00);
-            _mm_storeu_ps(output_address01, res01);
-            _mm_storeu_ps(output_address02, res02);
-            _mm_storeu_ps(output_address10, res10);
-            _mm_storeu_ps(output_address11, res11);
-            _mm_storeu_ps(output_address12, res12);
-#endif
-          }
-        }
-      }
-    }
-
-    // we always assume oc % BLOCK == 0!
-    // convert trans_out(HWC) to o_data(CHW)!
+  for (int bs_i = 0; bs_i < bs; bs_i++) {
     for (int oc_gi = 0; oc_gi < oc; oc_gi += BLOCK) {
       for (int oh_i = 0; oh_i < oh; oh_i++) {
         for (int ow_i = 0; ow_i < ow / BLOCK * BLOCK; ow_i += BLOCK) {
           // trans_out's start_index, we need fetch 8x8 element;
           float* from_address =
-              trans_out + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
+              trans_out + bs_i * oc * ohw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
 
 #ifdef __AVX__
           __m256 row0 = _mm256_loadu_ps(from_address + 0 * BLOCK);
@@ -740,7 +660,7 @@ void conv_direct_3x3s2(const float* i_data,
           __m256 row5 = _mm256_loadu_ps(from_address + 5 * BLOCK);
           __m256 row6 = _mm256_loadu_ps(from_address + 6 * BLOCK);
           __m256 row7 = _mm256_loadu_ps(from_address + 7 * BLOCK);
-          transpose8_ps(row0, row1, row2, row3, row4, row5, row6, row7);
+          transpose8_ps(row0, row1, row2, row3, row4, row5, row6, row7);  
 #else
 
           __m128 row0 = _mm_loadu_ps(from_address + 0 * BLOCK);
@@ -846,7 +766,7 @@ void conv_direct_3x3s2(const float* i_data,
         for (int ow_i = ow / BLOCK * BLOCK; ow_i < ow; ow_i++) {
           // trans_out
           float* from_address =
-              trans_out + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
+              trans_out + bs_i * ochw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
           float* dst_address =
               o_data + bs_i * ochw + oc_gi * ohw + oh_i * ow + ow_i;
 #ifdef __AVX__
@@ -898,7 +818,6 @@ void conv_direct_3x3s2(const float* i_data,
       }
     }
   }
-  TargetFree(TARGET(kX86), trans_out);
 }
 
 }  // namespace math

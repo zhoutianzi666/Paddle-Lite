@@ -280,8 +280,8 @@ int main(int argc, char** argv) {
   std::vector<shape_t> input_shapes{
       {1, 3, 224, 224}};  // shape_t ==> std::vector<int64_t>
 
-  int repeats = 10;
-  int warmup = 10;
+  int repeats = 2000;
+  int warmup = 0;
   int print_output_elem = 0;
 
   if (argc > 2 && argc < 6) {

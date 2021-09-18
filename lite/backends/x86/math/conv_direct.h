@@ -14,25 +14,48 @@
 
 #pragma once
 #include "lite/core/context.h"
-
+#include "lite/backends/x86/jit/gen/jitcode.h"
 namespace paddle {
 namespace lite {
 namespace x86 {
 namespace math {
 
-void conv_direct_3x3s2(const float* i_data,
-                       const float* trans_weight,
-                       int bs,
-                       int ic,
+struct conv_direct_3x3s2Code : Xbyak::CodeGenerator {
+    conv_direct_3x3s2Code
+                        (int ic,
                        int ih,
                        int iw,
                        int oc,
                        int oc_expand,
-                       float* o_data,
                        int oh,
                        int ow,
                        int ph,
-                       int pw,
+                       int pw);
+    void generate();
+    void run(const float* i_data,
+            const float* trans_weight,
+            int bs,
+            int ic,
+            int ih,
+            int iw,
+            int oc,
+            int oc_expand,
+            float* o_data,
+            float* trans_out,
+            int oh,
+            int ow,
+            int ph,
+            int pw,
+            const float* bias,
+            lite_api::ActivationType active_type);
+};
+
+void conv_direct_3x3s2_tranpose_out(int bs,
+                       int oc,
+                       float* o_data,
+                       float* trans_out,
+                       int oh,
+                       int ow,
                        const float* bias,
                        lite_api::ActivationType active_type);
 

@@ -59,6 +59,36 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
     auto weights_w_data = weights_.mutable_data<float>();
     lite::x86::math::conv_trans_weights_numc(
         filter_data, weights_w_data, oc, ic, wh, ww, block);
+
+    auto x_dims = param.x->dims();
+    auto w_dims = param.filter->dims();
+    auto o_dims = param.output->dims();
+
+    const int ph = (*(param.paddings))[0];
+    const int pw = (*(param.paddings))[2];
+
+    int iw = x_dims[3];
+    int ih = x_dims[2];
+    int bs = x_dims[0];
+    int oh = o_dims[2];
+    int ow = o_dims[3];
+
+
+//    memset(o_data, 0, sizeof(float) * oc * oh * ow * bs);
+      // holds the intermediate  HWC output result
+  trans_out_ = static_cast<float*>(TargetMalloc(TARGET(kX86), sizeof(float) * bs * oc_expand_ * oh * ow));
+  memset(trans_out_, 0, sizeof(float) * bs * oc_expand_ * oh * ow);
+  code_ = new lite::x86::math::conv_direct_3x3s2Code(ic,
+                                     ih,
+                                     iw,
+                                     oc,
+                                     oc_expand_,
+                                     oh,
+                                     ow,
+                                     ph,
+                                     pw);
+    code_->ready();
+    jit_code_ = code_->getCode<void (*)()>();
   }
 
 #ifdef LITE_WITH_PROFILE
@@ -79,6 +109,9 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
   bool flag_trans_bias_{false};
   std::vector<float> w_scale_;
   int oc_expand_;
+  lite::x86::math::conv_direct_3x3s2Code* code_;
+  void (*jit_code_)();
+  float* trans_out_;
 };
 
 }  // namespace x86
