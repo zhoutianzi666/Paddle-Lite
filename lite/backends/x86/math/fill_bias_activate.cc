@@ -140,7 +140,7 @@ static void activate_relu_inplace_bias(float *data,
             tmp_data + i,
             _mm256_min_ps(_mm256_max_ps(vec_data, vec_zero), vec_alph));
       }
-      _mm256_zeroupper();
+     // _mm256_zeroupper();
 #endif
 #ifdef __SSE__
       vec_bias_128 = _mm_set1_ps(bias[j]);

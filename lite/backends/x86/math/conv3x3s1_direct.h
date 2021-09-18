@@ -22,19 +22,7 @@ namespace x86 {
 namespace math {
 
 
-struct conv_direct_3x3s1 : Xbyak::CodeGenerator {
-
-    void generate(int ic,
-                  int ih,
-                  int iw,
-                  int oc,
-                  int oc_expand,
-                  int oh,
-                  int ow,
-                  int ph,
-                  int pw);
-
-    void run(const float* i_data,
+    void conv_direct_3x3s1(const float* i_data,
                        const float* trans_weight,
                        int bs,
                        int ic,
@@ -49,8 +37,6 @@ struct conv_direct_3x3s1 : Xbyak::CodeGenerator {
                        int pw,
                        const float* bias,
                        lite_api::ActivationType active_type);
-
-};
 }  // namespace math
 }  // namespace x86
 }  // namespace lite

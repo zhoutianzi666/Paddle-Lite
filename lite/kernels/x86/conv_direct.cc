@@ -71,7 +71,7 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
                                      b_data,
                                      act_param.active_type);
   else if(stride == 1)
-  codes1_->run(i_data,
+  lite::x86::math::conv_direct_3x3s1(i_data,
                                      weights_.data<float>(),
                                      bs,
                                      ic,

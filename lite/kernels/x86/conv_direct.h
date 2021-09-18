@@ -48,20 +48,12 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
 #endif
 
     int oc = param.filter->dims()[0];
-    int oh = param.output->dims()[2];
-    int ow = param.output->dims()[3];
     
     int ic = param.x->dims()[1];
-    int ih = param.x->dims()[2];
-    int iw = param.x->dims()[3];
-    
+
     int wh = param.filter->dims()[2];
     int ww = param.filter->dims()[3];
 
-    const int ph = (*(param.paddings))[0];
-    const int pw = (*(param.paddings))[2];
-
-    int stride = param.strides[0];
     int cround = ROUNDUP(oc, block);
     oc_expand_ = cround;
     // [chout, chin, wh, ww] -> [chout / block, chin, wh, ww, block]
@@ -70,22 +62,6 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
     auto weights_w_data = weights_.mutable_data<float>();
     lite::x86::math::conv_trans_weights_numc(
         filter_data, weights_w_data, oc, ic, wh, ww, block);
-    if (stride == 1)
-    {
-      codes1_ = new lite::x86::math::conv_direct_3x3s1();
-
-      codes1_->generate(ic,
-                  ih,
-                  iw,
-                  oc,
-                  oc_expand_,
-                  oh,
-                  ow,
-                  ph,
-                  pw);
-      codes1_->ready();
-    }
-
   }
 
 
@@ -107,7 +83,6 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
   bool flag_trans_bias_{false};
   std::vector<float> w_scale_;
   int oc_expand_;
-  lite::x86::math::conv_direct_3x3s1* codes1_;
 };
 
 }  // namespace x86

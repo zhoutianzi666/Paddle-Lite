@@ -29,300 +29,8 @@ namespace lite {
 namespace x86 {
 namespace math {
 
-struct  jit_3x3s1_param
-{
-  const float* input_address;
-  const float* kernel_address;
-  float* output_address;
-};
 
-void conv_direct_3x3s1::generate(int ic,
-                  int ih,
-                  int iw,
-                  int oc,
-                  int oc_expand,
-                  int oh,
-                  int ow,
-                  int ph,
-                  int pw)
-{
-
-#ifdef __AVX__
-  constexpr int BLOCK = 8;
-  // the sliding window is 4x5 and can obtain 2x3 results！ for AVX
-  constexpr int window_h = 4;
-  constexpr int window_w = 5;
-
-#else
-  constexpr int BLOCK = 4;
-  constexpr int window_h = 4;
-  constexpr int window_w = 5;
-#endif
-
-  // The maximum value of the upper left corner of the
-  // sliding window in h dimension
-  int new_ih;
-  int new_iw;
-  int new_ih_start;
-  int new_iw_start;
-  if (ph == 0 && pw == 0) {
-    // 2 is the stride_h of sliding window
-    // 3 is the stride_w of sliding window
-    new_ih = (ih - window_h) / 2 * 2;
-    new_iw = (iw - window_w) / 3 * 3;
-    new_ih_start = 0;
-    new_iw_start = 0;
-  } else if (ph == 1 && pw == 1) {
-    new_ih = (ih - window_h) / 2 * 2;
-    new_iw = (iw - window_w) / 3 * 3;
-    new_ih_start = 0;
-    new_iw_start = 0;
-  } else {
-    LOG(FATAL) << "[X86] conv_direct only support 3x3s1 with padding = 0 or 1";
-  }
-
-push(rax);
-push(rcx);
-push(rbx);
-push(rdx);
-push(r8);
-push(r9);
-push(r10);
-push(r11);
-push(r12);
-push(r13);
-push(r14);
-push(rdi);
-push(r15);
-
-
-  Xbyak::Label ih_loop;
-  Xbyak::Label iw_loop;
-  using reg64_t = const Xbyak::Reg64;
-  reg64_t ih_iter  = rax; reg64_t iw_iter  = rcx;
-  
-
-  reg64_t input_address  = rdx; mov(input_address , ptr[rdi + 8 * 0]);
-  reg64_t kernel_address = rbx; mov(kernel_address , ptr[rdi + 8 * 1]);
-  reg64_t output_address0 = r8; 
-  reg64_t output_address1 = r9;
-  mov(output_address0, ptr[rdi + 8 * 2]);
-  mov(output_address1, output_address0);
-  add(output_address1, ow * BLOCK * sizeof(float));
-
-
-  reg64_t iv0 = r10;
-  reg64_t iv1 = r11;
-  reg64_t iv2 = r12;
-  reg64_t iv3 = r13;
-
-  reg64_t output_address00 = r14; mov(output_address00, output_address0);
-  //reg64_t output_address01; // 分别差BLOCK * sizeof(float) byte!
-  //reg64_t output_address02;
-  
-  reg64_t output_address10 = rdi; mov(output_address10, output_address1);
-  //reg64_t output_address11; // 分别差BLOCK * sizeof(float) byte!
-  //reg64_t output_address12;
-  reg64_t r_temp(15);
-
-  mov(ih_iter, new_ih_start);
-  L(ih_loop);
-  {
-    mov(iv0, input_address);
-    imul(r_temp, ih_iter, iw * sizeof(float));
-    add(iv0, r_temp);
-    add(iv0, new_iw_start * sizeof(float));
-
-    mov(iv1, iv0);
-    mov(iv2, iv0);
-    mov(iv3, iv0);
-    add(iv1, 1 * iw * sizeof(float));
-    add(iv2, 2 * iw * sizeof(float));
-    add(iv3, 3 * iw * sizeof(float));
-    mov(output_address00, output_address0);
-    mov(output_address10, output_address1);
-
-
-    mov(iw_iter, new_iw_start); // initialization iw_iter！
-    L(iw_loop);
-    {
-      // Sliding windows can produce 2x3 results, I now create them
-      Xbyak::Ymm res00 = ymm0; 
-      vmovups(res00, ptr[output_address00 + 0 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm res01 = ymm1; 
-      vmovups(res01, ptr[output_address00 + 1 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm res02 = ymm2; 
-      vmovups(res02, ptr[output_address00 + 2 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm res10 = ymm3; 
-      vmovups(res10, ptr[output_address10 + 0 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm res11 = ymm4; 
-      vmovups(res11, ptr[output_address10 + 1 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm res12 = ymm5; 
-      vmovups(res12, ptr[output_address10 + 2 * BLOCK * sizeof(float)]);
-
-      Xbyak::Ymm input00 = ymm6; 
-      vbroadcastss(input00, ptr[iv0 + 0 * sizeof(float)]);
-      Xbyak::Ymm input02 = ymm7; 
-      vbroadcastss(input02, ptr[iv0 + 1 * sizeof(float)]);
-      Xbyak::Ymm input04 = ymm8; 
-      vbroadcastss(input04, ptr[iv0 + 2 * sizeof(float)]);
-      Xbyak::Ymm input10 = ymm9; 
-      vbroadcastss(input10, ptr[iv3 + 0 * sizeof(float)]);
-      Xbyak::Ymm input12 = ymm10; 
-      vbroadcastss(input12, ptr[iv3 + 1 * sizeof(float)]);
-      Xbyak::Ymm input14 = ymm11; 
-      vbroadcastss(input14, ptr[iv3 + 2 * sizeof(float)]);
-      Xbyak::Ymm w00 = ymm12; // 0行均用ymm12 
-      vmovups(w00, ptr[kernel_address + 0 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm w20 = ymm14;  // 2行均用ymm14
-      vmovups(w20, ptr[kernel_address + 6 * BLOCK * sizeof(float)]);
-      vfmadd231ps(res00, w00, input00);
-      vfmadd231ps(res01, w00, input02);
-      vfmadd231ps(res02, w00, input04);
-      vfmadd231ps(res10, w20, input10);
-      vfmadd231ps(res11, w20, input12);
-      vfmadd231ps(res12, w20, input14);
-      vbroadcastss(input00, ptr[iv0 + 3 * sizeof(float)]);
-      vbroadcastss(input10, ptr[iv3 + 3 * sizeof(float)]);
-      Xbyak::Ymm w01 = ymm12; vmovups(w01, ptr[kernel_address + 1 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm w21 = ymm14; vmovups(w21, ptr[kernel_address + 7 * BLOCK * sizeof(float)]);
-      vfmadd231ps(res00, w01, input02);
-      vfmadd231ps(res01, w01, input04);
-      vfmadd231ps(res02, w01, input00);
-      vfmadd231ps(res10, w21, input12);
-      vfmadd231ps(res11, w21, input14);
-      vfmadd231ps(res12, w21, input10);
-      vbroadcastss(input02, ptr[iv0 + 4 * sizeof(float)]);
-      vbroadcastss(input12, ptr[iv3 + 4 * sizeof(float)]);
-      Xbyak::Ymm w02 = ymm12; vmovups(w02, ptr[kernel_address + 2 * BLOCK * sizeof(float)]);
-      Xbyak::Ymm w22 = ymm14; vmovups(w22, ptr[kernel_address + 8 * BLOCK * sizeof(float)]);
-      vfmadd231ps(res00, w02, input04);
-      vfmadd231ps(res01, w02, input00);
-      vfmadd231ps(res02, w02, input02);
-      vfmadd231ps(res10, w22, input14);
-      vfmadd231ps(res11, w22, input10);
-      vfmadd231ps(res12, w22, input12);
-
-            // iv1: 0 1 2 3 4
-            // 0,1,2 is Responsible for res00,res10
-            // 1,2,3 is Responsible for res01,res11
-            // 2,3,4 is Responsible for res02,res12
-            vbroadcastss(input00, ptr[iv1 + 0 * sizeof(float)]);
-            vbroadcastss(input02, ptr[iv1 + 1 * sizeof(float)]);
-            vbroadcastss(input04, ptr[iv1 + 2 * sizeof(float)]);
-            Xbyak::Ymm w10 = ymm13; 
-            vmovups(w10, ptr[kernel_address + 3 * BLOCK * sizeof(float)]);
-            vmovups(w00, ptr[kernel_address + 0 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w10, input00);
-            vfmadd231ps(res01, w10, input02);
-            vfmadd231ps(res02, w10, input04);
-            vfmadd231ps(res10, w00, input00);
-            vfmadd231ps(res11, w00, input02);
-            vfmadd231ps(res12, w00, input04);
-            vbroadcastss(input00, ptr[iv1 + 3 * sizeof(float)]);
-            Xbyak::Ymm w11 = ymm13; 
-            vmovups(w11, ptr[kernel_address + 4 * BLOCK * sizeof(float)]);
-            vmovups(w01, ptr[kernel_address + 1 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w11, input02);
-            vfmadd231ps(res01, w11, input04);
-            vfmadd231ps(res02, w11, input00);
-            vfmadd231ps(res10, w01, input02);
-            vfmadd231ps(res11, w01, input04);
-            vfmadd231ps(res12, w01, input00);
-            vbroadcastss(input02, ptr[iv1 + 4 * sizeof(float)]);
-            Xbyak::Ymm w12 = ymm13; 
-            vmovups(w12, ptr[kernel_address + 5 * BLOCK * sizeof(float)]);
-            vmovups(w02, ptr[kernel_address + 2 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w12, input04);
-            vfmadd231ps(res01, w12, input00);
-            vfmadd231ps(res02, w12, input02);
-            vfmadd231ps(res10, w02, input04);
-            vfmadd231ps(res11, w02, input00);
-            vfmadd231ps(res12, w02, input02);
-
-            // // iv2: 0 1 2 3 4
-            // // 0,1,2 is Responsible for res00,res10
-            // // 1,2,3 is Responsible for res01,res11
-            // // 2,3,4 is Responsible for res02,res12
-            vbroadcastss(input00, ptr[iv2 + 0 * sizeof(float)]);
-            vbroadcastss(input02, ptr[iv2 + 1 * sizeof(float)]);
-            vbroadcastss(input04, ptr[iv2 + 2 * sizeof(float)]);
-            vmovups(w20, ptr[kernel_address + 6 * BLOCK * sizeof(float)]);
-            vmovups(w10, ptr[kernel_address + 3 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w20, input00);
-            vfmadd231ps(res01, w20, input02);
-            vfmadd231ps(res02, w20, input04);
-            vfmadd231ps(res10, w10, input00);
-            vfmadd231ps(res11, w10, input02);
-            vfmadd231ps(res12, w10, input04);
-            vbroadcastss(input00, ptr[iv2 + 3 * sizeof(float)]);
-            vmovups(w21, ptr[kernel_address + 7 * BLOCK * sizeof(float)]);
-            vmovups(w11, ptr[kernel_address + 4 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w21, input02);
-            vfmadd231ps(res01, w21, input04);
-            vfmadd231ps(res02, w21, input00);
-            vfmadd231ps(res10, w11, input02);
-            vfmadd231ps(res11, w11, input04);
-            vfmadd231ps(res12, w11, input00);
-            vbroadcastss(input02, ptr[iv2 + 4 * sizeof(float)]);
-            vmovups(w22, ptr[kernel_address + 8 * BLOCK * sizeof(float)]);
-            vmovups(w12, ptr[kernel_address + 5 * BLOCK * sizeof(float)]);
-            vfmadd231ps(res00, w22, input04);
-            vfmadd231ps(res01, w22, input00);
-            vfmadd231ps(res02, w22, input02);
-            vfmadd231ps(res10, w12, input04);
-            vfmadd231ps(res11, w12, input00);
-            vfmadd231ps(res12, w12, input02);
-
-            // Store them back
-            vmovups(ptr[output_address00 + 0 * BLOCK * sizeof(float)], res00);
-            vmovups(ptr[output_address00 + 1 * BLOCK * sizeof(float)], res01);
-            vmovups(ptr[output_address00 + 2 * BLOCK * sizeof(float)], res02);
-            vmovups(ptr[output_address10 + 0 * BLOCK * sizeof(float)], res10);
-            vmovups(ptr[output_address10 + 1 * BLOCK * sizeof(float)], res11);
-            vmovups(ptr[output_address10 + 2 * BLOCK * sizeof(float)], res12);
-
-      // update some value ;
-      add(iv0, 3 * sizeof(float));
-      add(iv1, 3 * sizeof(float));
-      add(iv2, 3 * sizeof(float));
-      add(iv3, 3 * sizeof(float));
-      add(output_address00, 3 * BLOCK * sizeof(float));
-      add(output_address10, 3 * BLOCK * sizeof(float));
-      add(iw_iter, 3);
-      cmp(iw_iter, new_iw);
-      jle(iw_loop);  
-    }
-
-    // update some value;
-    add(ih_iter, 2);
-    add(output_address0, 2 * ow * BLOCK * sizeof(float));
-    add(output_address1, 2 * ow * BLOCK * sizeof(float));
-    cmp(ih_iter, new_ih);
-    jle(ih_loop);
-  }
-
-pop(r15);
-pop(rdi);
-pop(r14);
-pop(r13);
-pop(r12);
-pop(r11);
-pop(r10);
-pop(r9);
-pop(r8);
-pop(rdx);
-pop(rbx);
-pop(rcx);
-pop(rax);
-ret();
-}
-
-
-
-
-
-void conv_direct_3x3s1::run(const float* i_data,
+void conv_direct_3x3s1(const float* i_data,
                        const float* trans_weight,
                        int bs,
                        int ic,
@@ -672,15 +380,15 @@ void conv_direct_3x3s1::run(const float* i_data,
 #ifdef __AVX__
 
         // Take out 9 weight values to the register
-        // __m256 w00 = _mm256_loadu_ps(kernel_start_address + 0 * BLOCK);
-        // __m256 w01 = _mm256_loadu_ps(kernel_start_address + 1 * BLOCK);
-        // __m256 w02 = _mm256_loadu_ps(kernel_start_address + 2 * BLOCK);
-        // __m256 w10 = _mm256_loadu_ps(kernel_start_address + 3 * BLOCK);
-        // __m256 w11 = _mm256_loadu_ps(kernel_start_address + 4 * BLOCK);
-        // __m256 w12 = _mm256_loadu_ps(kernel_start_address + 5 * BLOCK);
-        // __m256 w20 = _mm256_loadu_ps(kernel_start_address + 6 * BLOCK);
-        // __m256 w21 = _mm256_loadu_ps(kernel_start_address + 7 * BLOCK);
-        // __m256 w22 = _mm256_loadu_ps(kernel_start_address + 8 * BLOCK);
+        __m256 w00 = _mm256_loadu_ps(kernel_start_address + 0 * BLOCK);
+        __m256 w01 = _mm256_loadu_ps(kernel_start_address + 1 * BLOCK);
+        __m256 w02 = _mm256_loadu_ps(kernel_start_address + 2 * BLOCK);
+        __m256 w10 = _mm256_loadu_ps(kernel_start_address + 3 * BLOCK);
+        __m256 w11 = _mm256_loadu_ps(kernel_start_address + 4 * BLOCK);
+        __m256 w12 = _mm256_loadu_ps(kernel_start_address + 5 * BLOCK);
+        __m256 w20 = _mm256_loadu_ps(kernel_start_address + 6 * BLOCK);
+        __m256 w21 = _mm256_loadu_ps(kernel_start_address + 7 * BLOCK);
+        __m256 w22 = _mm256_loadu_ps(kernel_start_address + 8 * BLOCK);
 #else
         // SSE version
 #endif
@@ -690,17 +398,154 @@ void conv_direct_3x3s1::run(const float* i_data,
         float* output_address0 = output_start_address +
                                  (new_ih_start + ph) / strideh * ow * BLOCK +
                                  (new_iw_start + pw) / stridew * BLOCK;
-        //float* output_address1 = output_address0 + ow * BLOCK;
+        float* output_address1 = output_address0 + ow * BLOCK;
+        for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 2,
+                 output_address0 += 2 * ow * BLOCK,
+                 output_address1 += 2 * ow * BLOCK) {
+          // iv is (ih_i~ ih_i + 3)row's first address !
+          // The following is the starting address of
+          // each line of the sliding window
+          const float* iv0 = input_start_address + ih_i * iw + new_iw_start;
+          const float* iv1 = iv0 + 1 * iw;
+          const float* iv2 = iv0 + 2 * iw;
+          const float* iv3 = iv0 + 3 * iw;
+          // the first line output's address
+          float* output_address00 = output_address0 + BLOCK * 0;
+          float* output_address01 = output_address0 + BLOCK * 1;
+          float* output_address02 = output_address0 + BLOCK * 2;
+          // the second line output's address
+          float* output_address10 = output_address1 + BLOCK * 0;
+          float* output_address11 = output_address1 + BLOCK * 1;
+          float* output_address12 = output_address1 + BLOCK * 2;
 
+          for (int iw_i = new_iw_start; iw_i <= new_iw; iw_i += 3,
+                   iv0 += 3,
+                   iv1 += 3,
+                   iv2 += 3,
+                   iv3 += 3,
+                   output_address00 += 3 * BLOCK,
+                   output_address01 += 3 * BLOCK,
+                   output_address02 += 3 * BLOCK,
+                   output_address10 += 3 * BLOCK,
+                   output_address11 += 3 * BLOCK,
+                   output_address12 += 3 * BLOCK) {
+          
+#ifdef __AVX__
 
-        jit_3x3s1_param param;
-        param.input_address = input_start_address;
-        param.kernel_address = kernel_start_address;
-        param.output_address = output_address0;
-        void (*f)(jit_3x3s1_param*) = getCode<void (*)(jit_3x3s1_param*)>();
-        f(&param);
-        // 下面需要删掉
+            // Sliding windows can produce 2x3 results, I now create them
+            __m256 res00 = _mm256_loadu_ps(output_address00);
+            __m256 res01 = _mm256_loadu_ps(output_address01);
+            __m256 res02 = _mm256_loadu_ps(output_address02);
+            __m256 res10 = _mm256_loadu_ps(output_address10);
+            __m256 res11 = _mm256_loadu_ps(output_address11);
+            __m256 res12 = _mm256_loadu_ps(output_address12);
 
+            // iv0: 0 1 2 3 4
+            // 0,1,2 is Responsible for res00
+            // 1,2,3 is Responsible for res01
+            // 2,3,4 is Responsible for res02
+            // iv3: 0 1 2 3 4
+            // 0,1,2 is Responsible for res10
+            // 1,2,3 is Responsible for res11
+            // 2,3,4 is Responsible for res12
+            __m256 input00 = _mm256_set1_ps(iv0[0]);
+            __m256 input02 = _mm256_set1_ps(iv0[1]);
+            __m256 input04 = _mm256_set1_ps(iv0[2]);
+            __m256 input10 = _mm256_set1_ps(iv3[0]);
+            __m256 input12 = _mm256_set1_ps(iv3[1]);
+            __m256 input14 = _mm256_set1_ps(iv3[2]);
+            res00 = _mm256_fmadd_ps(input00, w00, res00);
+            res01 = _mm256_fmadd_ps(input02, w00, res01);
+            res02 = _mm256_fmadd_ps(input04, w00, res02);
+            res10 = _mm256_fmadd_ps(input10, w20, res10);
+            res11 = _mm256_fmadd_ps(input12, w20, res11);
+            res12 = _mm256_fmadd_ps(input14, w20, res12);
+            input00 = _mm256_set1_ps(iv0[3]);
+            input10 = _mm256_set1_ps(iv3[3]);
+            res00 = _mm256_fmadd_ps(input02, w01, res00);
+            res01 = _mm256_fmadd_ps(input04, w01, res01);
+            res02 = _mm256_fmadd_ps(input00, w01, res02);
+            res10 = _mm256_fmadd_ps(input12, w21, res10);
+            res11 = _mm256_fmadd_ps(input14, w21, res11);
+            res12 = _mm256_fmadd_ps(input10, w21, res12);
+            input02 = _mm256_set1_ps(iv0[4]);
+            input12 = _mm256_set1_ps(iv3[4]);
+            res00 = _mm256_fmadd_ps(input04, w02, res00);
+            res01 = _mm256_fmadd_ps(input00, w02, res01);
+            res02 = _mm256_fmadd_ps(input02, w02, res02);
+            res10 = _mm256_fmadd_ps(input14, w22, res10);
+            res11 = _mm256_fmadd_ps(input10, w22, res11);
+            res12 = _mm256_fmadd_ps(input12, w22, res12);
+
+            // iv1: 0 1 2 3 4
+            // 0,1,2 is Responsible for res00,res10
+            // 1,2,3 is Responsible for res01,res11
+            // 2,3,4 is Responsible for res02,res12
+            input00 = _mm256_set1_ps(iv1[0]);
+            input02 = _mm256_set1_ps(iv1[1]);
+            input04 = _mm256_set1_ps(iv1[2]);
+            res00 = _mm256_fmadd_ps(input00, w10, res00);
+            res01 = _mm256_fmadd_ps(input02, w10, res01);
+            res02 = _mm256_fmadd_ps(input04, w10, res02);
+            res10 = _mm256_fmadd_ps(input00, w00, res10);
+            res11 = _mm256_fmadd_ps(input02, w00, res11);
+            res12 = _mm256_fmadd_ps(input04, w00, res12);
+            input00 = _mm256_set1_ps(iv1[3]);
+            res00 = _mm256_fmadd_ps(input02, w11, res00);
+            res01 = _mm256_fmadd_ps(input04, w11, res01);
+            res02 = _mm256_fmadd_ps(input00, w11, res02);
+            res10 = _mm256_fmadd_ps(input02, w01, res10);
+            res11 = _mm256_fmadd_ps(input04, w01, res11);
+            res12 = _mm256_fmadd_ps(input00, w01, res12);
+            input02 = _mm256_set1_ps(iv1[4]);
+            res00 = _mm256_fmadd_ps(input04, w12, res00);
+            res01 = _mm256_fmadd_ps(input00, w12, res01);
+            res02 = _mm256_fmadd_ps(input02, w12, res02);
+            res10 = _mm256_fmadd_ps(input04, w02, res10);
+            res11 = _mm256_fmadd_ps(input00, w02, res11);
+            res12 = _mm256_fmadd_ps(input02, w02, res12);
+
+            // // iv2: 0 1 2 3 4
+            // // 0,1,2 is Responsible for res00,res10
+            // // 1,2,3 is Responsible for res01,res11
+            // // 2,3,4 is Responsible for res02,res12
+            input00 = _mm256_set1_ps(iv2[0]);
+            input02 = _mm256_set1_ps(iv2[1]);
+            input04 = _mm256_set1_ps(iv2[2]);
+            res00 = _mm256_fmadd_ps(input00, w20, res00);
+            res01 = _mm256_fmadd_ps(input02, w20, res01);
+            res02 = _mm256_fmadd_ps(input04, w20, res02);
+            res10 = _mm256_fmadd_ps(input00, w10, res10);
+            res11 = _mm256_fmadd_ps(input02, w10, res11);
+            res12 = _mm256_fmadd_ps(input04, w10, res12);
+            input00 = _mm256_set1_ps(iv2[3]);
+            res00 = _mm256_fmadd_ps(input02, w21, res00);
+            res01 = _mm256_fmadd_ps(input04, w21, res01);
+            res02 = _mm256_fmadd_ps(input00, w21, res02);
+            res10 = _mm256_fmadd_ps(input02, w11, res10);
+            res11 = _mm256_fmadd_ps(input04, w11, res11);
+            res12 = _mm256_fmadd_ps(input00, w11, res12);
+            input02 = _mm256_set1_ps(iv2[4]);
+            res00 = _mm256_fmadd_ps(input04, w22, res00);
+            res01 = _mm256_fmadd_ps(input00, w22, res01);
+            res02 = _mm256_fmadd_ps(input02, w22, res02);
+            res10 = _mm256_fmadd_ps(input04, w12, res10);
+            res11 = _mm256_fmadd_ps(input00, w12, res11);
+            res12 = _mm256_fmadd_ps(input02, w12, res12);
+
+            // Store them back
+            _mm256_storeu_ps(output_address00, res00);
+            _mm256_storeu_ps(output_address01, res01);
+            _mm256_storeu_ps(output_address02, res02);
+            _mm256_storeu_ps(output_address10, res10);
+            _mm256_storeu_ps(output_address11, res11);
+            _mm256_storeu_ps(output_address12, res12);
+
+#else
+            // SSE 
+#endif
+          }
+        }
       }
     }
 
