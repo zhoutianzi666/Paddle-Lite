@@ -16,6 +16,8 @@
 #include <cmath>
 #include "lite/backends/x86/math/conv_bias.h"
 #include "lite/backends/x86/math/conv_direct.h"
+#include "lite/backends/x86/math/conv3x3s1_direct.h"
+
 namespace paddle {
 namespace lite {
 namespace kernels {
@@ -24,8 +26,10 @@ namespace x86 {
 template <>
 void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
   auto& param = this->Param<param_t>();
-  CHECK_EQ(param.strides[0], 2);
-  CHECK_EQ(param.strides[1], 2);
+  int stride = param.strides[0];
+
+  // CHECK_EQ(param.strides[0], 2);
+  // CHECK_EQ(param.strides[1], 2);
   // auto& ctx = this->ctx_->template As<X86Context>();
 
   const auto* i_data = param.x->data<float>();
@@ -50,7 +54,24 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
   memset(o_data, 0, sizeof(float) * oc * oh * ow * bs);
 
   auto act_param = param.activation_param;
+  if (stride == 2)
   lite::x86::math::conv_direct_3x3s2(i_data,
+                                     weights_.data<float>(),
+                                     bs,
+                                     ic,
+                                     ih,
+                                     iw,
+                                     oc,
+                                     oc_expand_,
+                                     o_data,
+                                     oh,
+                                     ow,
+                                     ph,
+                                     pw,
+                                     b_data,
+                                     act_param.active_type);
+  else if(stride == 1)
+  codes1_->run(i_data,
                                      weights_.data<float>(),
                                      bs,
                                      ic,
