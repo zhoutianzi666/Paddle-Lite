@@ -314,7 +314,7 @@ void TestConvPaddings(Place place, float abs_error = 2e-5) {
     for (auto out_channels : {32}) {
       for (auto paddings : std::vector<std::vector<int>>{{1, 1}}) {
         std::unique_ptr<arena::TestCase> tester(new ConvComputeTester(
-            place, "def", DDim(dims), out_channels, 3, {2, 2}, paddings));
+            place, "def", DDim(dims), out_channels, 3, {1, 1}, paddings));
         arena::Arena arena(std::move(tester), place, abs_error);
         arena.TestPrecision();
       }

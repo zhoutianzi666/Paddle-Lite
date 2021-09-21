@@ -27,8 +27,8 @@ namespace x86 {
 template <>
 void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
   auto& param = this->Param<param_t>();
-  CHECK_EQ(param.strides[0], 2);
-  CHECK_EQ(param.strides[1], 2);
+  //CHECK_EQ(param.strides[0], 2);
+  //CHECK_EQ(param.strides[1], 2);
   // auto& ctx = this->ctx_->template As<X86Context>();
 
   const auto* i_data = param.x->data<float>();

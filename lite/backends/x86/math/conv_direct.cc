@@ -59,12 +59,12 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
   constexpr int BLOCK = 8;
   // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
   constexpr int window_h = 3;
-  constexpr int window_w = 7;
+  constexpr int window_w = 5;
 
 #else
   constexpr int BLOCK = 4;
   constexpr int window_h = 3;
-  constexpr int window_w = 7;
+  constexpr int window_w = 5;
 #endif
 
   // The maximum value of the upper left corner of the
@@ -76,16 +76,16 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
   if (ph == 0 && pw == 0) {
     // 4 is the stride_h of sliding window
     // 6 is the stride_w of sliding window
-    new_ih = (ih - window_h) / 2 * 2;
-    new_iw = (iw - window_w) / 6 * 6;
+    new_ih = (ih - window_h) / 1 * 1;
+    new_iw = (iw - window_w) / 3 * 3;
     new_ih_start = 0;
     new_iw_start = 0;
   } else if (ph == 1 && pw == 1) {
-    new_ih = (ih - window_h - 1) / 2 * 2 + 1;
-    new_iw = (iw - window_w - 1) / 6 * 6 + 1;
+    new_ih = (ih - window_h) / 1 * 1;
+    new_iw = (iw - window_w) / 3 * 3;
 
-    new_ih_start = 1;
-    new_iw_start = 1;
+    new_ih_start = 0;
+    new_iw_start = 0;
   } else {
     LOG(FATAL) << "[X86] conv_direct only support 3x3s2 with padding = 0 or 1";
   }
@@ -118,7 +118,7 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
   // 其中input_start_address是从new_ih_start开始的哦!
   // output_start_address_xb肯定不是从0开始的哈！
 
-  reg64_t reg_tmp = r11;
+reg64_t reg_tmp = r11;
 
 
 
@@ -161,9 +161,9 @@ for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先�
     Xbyak::Ymm input04 = ymm14;
     temp = (ww_i + 0 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input00, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    temp = (ww_i + 1 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input02, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 4 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input04, ptr[input_row_address_xb + temp]);
 
      for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
@@ -200,9 +200,9 @@ for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
       vmovups(ptr[output_row_address_xb + temp], res2);
     }
 
-    add(input_row_address_xb, 6 * sizeof(float));
+    add(input_row_address_xb, 3 * sizeof(float));
     add(output_row_address_xb, 3 * BLOCK * sizeof(float));
-    add(iw_iter, 6);
+    add(iw_iter, 3);
     cmp(iw_iter, new_iw);
     jle(iw_loop,T_NEAR);
   }
@@ -264,9 +264,9 @@ for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先�
     Xbyak::Ymm input04 = ymm14;
     temp = (ww_i + 0 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input00, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    temp = (ww_i + 1 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input02, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 4 + wh_i * iw + ic_i * ihw) * sizeof(float);
+    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
     vbroadcastss(input04, ptr[input_row_address_xb + temp]);
 
      for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
@@ -302,9 +302,9 @@ for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
       vmovups(ptr[output_row_address_xb + temp], res2);
     }
 
-    add(input_row_address_xb, 6 * sizeof(float));
+    add(input_row_address_xb, 3 * sizeof(float));
     add(output_row_address_xb, 3 * BLOCK * sizeof(float));
-    add(iw_iter, 6);
+    add(iw_iter, 3);
     cmp(iw_iter, new_iw);
     jle(iw2_loop,T_NEAR);
   }
@@ -340,19 +340,19 @@ void conv_direct_3x3s2Code::run
 {
   constexpr int ww = 3;
   constexpr int wh = 3;
-  constexpr int strideh = 2;
-  constexpr int stridew = 2;
+  constexpr int strideh = 1;
+  constexpr int stridew = 1;
 
 #ifdef __AVX__
   constexpr int BLOCK = 8;
-  // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
+  // the sliding window is 4x4 and can obtain 1x3 results！ for AVX
   constexpr int window_h = 3;
-  constexpr int window_w = 7;
+  constexpr int window_w = 5;
 
 #else
   constexpr int BLOCK = 4;
   constexpr int window_h = 3;
-  constexpr int window_w = 7;
+  constexpr int window_w = 5;
 #endif
 
   // The maximum value of the upper left corner of the
@@ -364,16 +364,16 @@ void conv_direct_3x3s2Code::run
   if (ph == 0 && pw == 0) {
     // 4 is the stride_h of sliding window
     // 6 is the stride_w of sliding window
-    new_ih = (ih - window_h) / 2 * 2;
-    new_iw = (iw - window_w) / 6 * 6;
+    new_ih = (ih - window_h) / 1 * 1;
+    new_iw = (iw - window_w) / 3 * 3;
     new_ih_start = 0;
     new_iw_start = 0;
 
   } else if (ph == 1 && pw == 1) {
-    new_ih = (ih - window_h - 1) / 2 * 2 + 1;
-    new_iw = (iw - window_w - 1) / 6 * 6 + 1;
-    new_ih_start = 1;
-    new_iw_start = 1;
+    new_ih = (ih - window_h) / 1 * 1;
+    new_iw = (iw - window_w) / 3 * 3;
+    new_ih_start = 0;
+    new_iw_start = 0;
     
   } else {
     LOG(FATAL) << "[X86] conv_direct only support 3x3s2 with padding = 0 or 1";
@@ -383,10 +383,10 @@ void conv_direct_3x3s2Code::run
   // [o_right, ow) in output map needs Special treatment (Right boundary)
   // [0,o_upper) same as above (Upper boundary)
   // [o_down, oh) same as above (Lower boundary)
-  int o_left = (new_iw_start + pw) / 2;
-  int o_right = (new_iw + pw) / 2 + 3;
-  int o_upper = (new_ih_start + ph) / 2;
-  int o_down = (new_ih + ph) / 2 + 1;
+  int o_left = (new_iw_start + pw) / 1;
+  int o_right = (new_iw + pw) / 1 + 3;
+  int o_upper = (new_ih_start + ph) / 1;
+  int o_down = (new_ih + ph) / 1 + 1;
   //std::cout << o_right << std::endl;
   // The number of channels of convolution kernel
   // and the number of input channels are always the same !
@@ -722,18 +722,14 @@ void conv_direct_3x3s2Code::run
       }
     }
 
-
-
-
-
 /*-----------------------new way--------------------------------------*/
 
     const float* input_row_address = i_data + bs_i * ichw + new_iw_start + new_ih_start * iw;
-    float* output_row_address = trans_out + (new_ih_start + ph) / 2 * ow * BLOCK + (new_iw_start + pw) / 2 * BLOCK;
+    float* output_row_address = trans_out + (new_ih_start + ph) / strideh * ow * BLOCK + (new_iw_start + pw) / stridew * BLOCK;
 
-    for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 2, 
+    for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 1, 
                                    output_row_address += ow * BLOCK,
-                                   input_row_address += 2 * iw) {
+                                   input_row_address += iw) {
 
         jit_param param;
         param.input_row_address = input_row_address;
