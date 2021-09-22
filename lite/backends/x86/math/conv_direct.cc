@@ -120,28 +120,17 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
 
 reg64_t reg_tmp = r11;
 
-
-
  Xbyak::Label oc_loop; 
  int oc_loop_n = oc_expand / 32; // every 32 output channels are a loop
  int oc_remain = oc_expand % 32;
  xor_(oc_iter, oc_iter);
  int temp;
 
-if (oc_loop_n >= 1)
-{
-L(oc_loop);
-{
-  xor_(iw_iter, iw_iter);
-  add(iw_iter, new_iw_start);
-  Xbyak::Label iw_loop;
+// compute 这个函数的参数oc_group的意思是我这次要处理多少个卷积核
+// 
+auto compute = [=,&temp](int oc_group) {
   
-  int oc_group = 32;
-
-  L(iw_loop);
-  {
-
-for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
+  for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
       Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
       Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
       Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
@@ -199,6 +188,22 @@ for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
       temp = (oc_gi * ohw + 2 * BLOCK) * sizeof(float);
       vmovups(ptr[output_row_address_xb + temp], res2);
     }
+};
+
+if (oc_loop_n >= 1)
+{
+L(oc_loop);
+{
+  xor_(iw_iter, iw_iter);
+  add(iw_iter, new_iw_start);
+  Xbyak::Label iw_loop;
+
+
+
+
+  L(iw_loop);
+  {
+    compute(32);
 
     add(input_row_address_xb, 3 * sizeof(float));
     add(output_row_address_xb, 3 * BLOCK * sizeof(float));
@@ -208,7 +213,7 @@ for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
   }
 
   inc(oc_iter);
-  
+
   mov(input_row_address_xb , ptr[rdi + 8 * 0]);
   mov(kernel_address_xb , ptr[rdi + 8 * 1]);
   mov(output_row_address_xb, ptr[rdi + 8 * 2]);
@@ -224,83 +229,22 @@ for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
 
   cmp(oc_iter, oc_loop_n);
   jl(oc_loop);
+
 }
 }
+
 
 
 /* deal with the remain oc*/
 
-
 if( oc_remain != 0)
 {
+  Xbyak::Label iw2_loop;
+  mov(iw_iter, new_iw_start);
 
-Xbyak::Label iw2_loop;
-// mov(input_row_address_xb , ptr[rdi + 8 * 0]);
-// mov(kernel_address_xb , ptr[rdi + 8 * 1]);
-// mov(output_row_address_xb, ptr[rdi + 8 * 2]);
-// add(kernel_address_xb , 4 * whwB * wc * sizeof(float));
-// add(output_row_address_xb, 4 * 112 * 112 * BLOCK * sizeof(float));
-mov(iw_iter, new_iw_start);
-
-L(iw2_loop);
-{
-for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
-      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
-      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
-      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
-      vxorps(res0,res0,res0);
-      vxorps(res1,res1,res1);
-      vxorps(res2,res2,res2);
-    }
-
-// 这里开始处理这6个输入数字和卷积核心的卷积！
-for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先展开一下吧！
-  for (int ww_i = 0; ww_i < ww; ww_i ++){// 卷积核有三列,但是我每次只拿一颗！
-    for (int ic_i = 0; ic_i < wc; ic_i++) {// inchannel哦！
-
-    // get three input data
-    Xbyak::Ymm input00 = ymm12;
-    Xbyak::Ymm input02 = ymm13;
-    Xbyak::Ymm input04 = ymm14;
-    temp = (ww_i + 0 + wh_i * iw + ic_i * ihw) * sizeof(float);
-    vbroadcastss(input00, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 1 + wh_i * iw + ic_i * ihw) * sizeof(float);
-    vbroadcastss(input02, ptr[input_row_address_xb + temp]);
-    temp = (ww_i + 2 + wh_i * iw + ic_i * ihw) * sizeof(float);
-    vbroadcastss(input04, ptr[input_row_address_xb + temp]);
-
-     for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
-
-      //  接着搞一个卷积核
-      Xbyak::Ymm kernel = ymm15;
-      temp = (oc_gi * wchw + ic_i * whwB + ww_i * BLOCK + wh_i * ww * BLOCK) * sizeof(float);
-      vmovups(kernel, ptr[kernel_address_xb + temp]);
-
-      // 接着获得3个输出结果
-      // 拿着ymm15和3个输入搞起来！
-      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
-      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
-      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
-      vfmadd231ps(res0, kernel, input00);
-      vfmadd231ps(res1, kernel, input02);
-      vfmadd231ps(res2, kernel, input04);
-    }
-  }
- }
-}
-    // 这里需要store输出了哦！12个输出!
-for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
-      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
-      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
-      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
-      
-      temp = (oc_gi * ohw + 0 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res0);
-      temp = (oc_gi * ohw + 1 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res1);
-      temp = (oc_gi * ohw + 2 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res2);
-    }
+  L(iw2_loop);
+  {
+    compute(oc_remain);
 
     add(input_row_address_xb, 3 * sizeof(float));
     add(output_row_address_xb, 3 * BLOCK * sizeof(float));
@@ -308,7 +252,9 @@ for (int oc_gi = 0; oc_gi < oc_remain; oc_gi += BLOCK) {
     cmp(iw_iter, new_iw);
     jle(iw2_loop,T_NEAR);
   }
+
 }
+
 
 pop(r11);
 pop(r10);
@@ -738,6 +684,7 @@ void conv_direct_3x3s2Code::run
         
         void (*f)(jit_param*) = getCode<void (*)(jit_param*)>();
         f(&param);
+        
   }
 }
 

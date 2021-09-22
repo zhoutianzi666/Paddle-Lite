@@ -16,6 +16,8 @@
 #include <cmath>
 #include "lite/backends/x86/math/conv_bias.h"
 #include "lite/backends/x86/math/conv_direct.h"
+#include <time.h>
+#include <stdlib.h>
 //#include "lite/backends/x86/xbyak/xbyak.h"
 //#include "lite/backends/x86/jit/gen/jitcode.h"
 //#include "xbyak/xbyak.h"
@@ -70,8 +72,13 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
             b_data,
             act_param.active_type);
   
+  double time1 = (double)clock() / CLOCKS_PER_SEC;
   lite::x86::math::conv_direct_3x3s2_tranpose_out(bs, oc, o_data, trans_out_, oh, ow, b_data,
                                    act_param.active_type);
+
+	double time2 = (double)clock() / CLOCKS_PER_SEC;
+	printf("分块的运算时间：%lf\n", double(time2 - time1) * 1000);
+  std::cout << code_->getSize() << std::endl;
 
 }
 }  // namespace x86
