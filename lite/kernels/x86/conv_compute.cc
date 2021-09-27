@@ -98,6 +98,7 @@ void Conv2dCompute<PRECISION(kFloat), PRECISION(kFloat)>::PrepareForRun() {
              flag_p01) {
     impl_ = new DirectConv<PRECISION(kFloat), PRECISION(kFloat)>();
     VLOG(3) << "invoking directConv  3x3s2";
+    std::cout <<"dfs" << std::endl;
   }
 
   if (impl_) {

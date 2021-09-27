@@ -74,6 +74,7 @@ class JitCode : public GenBase, public Xbyak::CodeGenerator {
             code_ptr) {}
 
   virtual void genCode() = 0;
+  std::string name() const override { return "jitcode"; }
 
   size_t getSize() const override { return CodeGenerator::getSize(); }
   const unsigned char* getCodeInternal() const override {

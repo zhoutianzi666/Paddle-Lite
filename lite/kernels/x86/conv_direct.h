@@ -88,7 +88,6 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
                                      ph,
                                      pw);
     code_->ready();
-    jit_code_ = code_->getCode<void (*)()>();
   }
 
 #ifdef LITE_WITH_PROFILE

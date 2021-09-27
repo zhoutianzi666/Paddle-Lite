@@ -278,7 +278,7 @@ void RunModel(std::string model_dir,
 int main(int argc, char** argv) {
   std::vector<std::string> str_input_shapes;
   std::vector<shape_t> input_shapes{
-      {1, 3, 224, 224}};  // shape_t ==> std::vector<int64_t>
+      {1, 3, 640, 640}};  // shape_t ==> std::vector<int64_t>
 
   int repeats = 2000;
   int warmup = 0;

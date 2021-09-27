@@ -20,7 +20,7 @@ namespace lite {
 namespace x86 {
 namespace math {
 
-struct conv_direct_3x3s2Code : Xbyak::CodeGenerator {
+struct conv_direct_3x3s2Code : lite::jit::gen::JitCode {
     conv_direct_3x3s2Code
                         (int ic,
                        int ih,
@@ -31,7 +31,8 @@ struct conv_direct_3x3s2Code : Xbyak::CodeGenerator {
                        int ow,
                        int ph,
                        int pw);
-    void generate();
+    virtual void genCode() {};
+    virtual ~conv_direct_3x3s2Code() {};
     void run(const float* i_data,
             const float* trans_weight,
             int bs,
