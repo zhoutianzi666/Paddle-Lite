@@ -77,7 +77,7 @@ add_kernel(pow_compute_x86 X86 extra SRCS pow_compute.cc DEPS ${lite_kernel_deps
 add_kernel(rnn_compute_x86 X86 basic SRCS rnn_compute.cc DEPS ${lite_kernel_deps} rnn concat_and_split)
 add_kernel(conv_transpose_x86 X86 basic SRCS conv_transpose_compute.cc DEPS ${lite_kernel_deps} conv2d_transpose fill_bias_activate)
 
-lite_cc_test(test_conv2d_compute_x86 SRCS conv_compute_test.cc DEPS conv_compute_x86)
+#lite_cc_test(test_conv2d_compute_x86 SRCS conv_compute_test.cc DEPS conv_compute_x86)
 lite_cc_test(test_mul_compute_x86 SRCS mul_compute_test.cc DEPS mul_compute_x86)
 lite_cc_test(test_sequence_pool_compute_x86 SRCS sequence_pool_compute_test.cc DEPS sequence_pool_compute_x86)
 lite_cc_test(test_batch_norm_compute_x86 SRCS batch_norm_compute_test.cc DEPS batch_norm_compute_x86)

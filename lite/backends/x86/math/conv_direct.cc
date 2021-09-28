@@ -38,7 +38,7 @@ struct  jit_param
   float* output_row_address;
 };
 
-conv_direct_3x3s2Code ::conv_direct_3x3s2Code
+conv_direct_3x3s2 ::conv_direct_3x3s2
                       (int ic,
                        int ih,
                        int iw,
@@ -83,7 +83,6 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
   } else if (ph == 1 && pw == 1) {
     new_ih = (ih - window_h - 1) / 2 * 2 + 1;
     new_iw = (iw - window_w - 1) / 6 * 6 + 1;
-
     new_ih_start = 1;
     new_iw_start = 1;
   } else {
@@ -101,7 +100,6 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
  
   using reg64_t = const Xbyak::Reg64;
 
-
   reg64_t iw_iter  = rax;
   reg64_t oc_iter  = rcx;
 
@@ -114,31 +112,28 @@ conv_direct_3x3s2Code ::conv_direct_3x3s2Code
 
   reg64_t reg_tmp = r11;
 
+  Xbyak::Label oc_loop; 
+  int oc_loop_n = oc_expand / 32; // every 32 output channels are a loop
+  int oc_remain = oc_expand % 32;
+  xor_(oc_iter, oc_iter);
+  int temp;
 
-
- Xbyak::Label oc_loop; 
- int oc_loop_n = oc_expand / 32; // every 32 output channels are a loop
- int oc_remain = oc_expand % 32;
- xor_(oc_iter, oc_iter);
- int temp;
-
-
-
- auto compute = [=,&temp](int oc_group) {
+ auto compute = [=,&temp](int oc_group, int ic_group) {
   
   constexpr int unrowll_ow = 3;
   for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
     for (int j = 0; j < unrowll_ow; j++)
       {
         Xbyak::Ymm res(oc_gi / BLOCK * unrowll_ow + j);
-        vxorps(res,res,res);
+        temp = (oc_gi * ohw + j * BLOCK) * sizeof(float);
+        vmovups(res, ptr[output_row_address_xb + temp]);
       }
     }
 
 // 这里开始处理这6个输入数字和卷积核心的卷积！
 for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先展开一下吧！
-  for (int ww_i = 0; ww_i < ww; ww_i ++){// 卷积核有三列,但是我每次只拿一颗！
-    for (int ic_i = 0; ic_i < wc; ic_i++) {// inchannel哦！
+  for (int ww_i = 0; ww_i < ww; ww_i ++){// 卷积核有三列,但是我每次只拿一个数！
+    for (int ic_i = 0; ic_i < ic_group; ic_i++) {// inchannel哦！
 
     // get three input data
     Xbyak::Ymm input00 = ymm12;
@@ -171,70 +166,65 @@ for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先�
  }
 }
 
-    // 这里需要store输出了哦！12个输出!
+// 这里需要store输出了哦！12个输出!
 for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
-      Xbyak::Ymm res0(oc_gi / BLOCK * 3 + 0);
-      Xbyak::Ymm res1(oc_gi / BLOCK * 3 + 1);
-      Xbyak::Ymm res2(oc_gi / BLOCK * 3 + 2);
-      
-      temp = (oc_gi * ohw + 0 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res0);
-      temp = (oc_gi * ohw + 1 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res1);
-      temp = (oc_gi * ohw + 2 * BLOCK) * sizeof(float);
-      vmovups(ptr[output_row_address_xb + temp], res2);
-    }
+  for (int j = 0; j < unrowll_ow; j++)
+  {
+    Xbyak::Ymm res(oc_gi / BLOCK * unrowll_ow + j);
+    temp = (oc_gi * ohw + j * BLOCK) * sizeof(float);
+    vmovups(ptr[output_row_address_xb + temp], res);
+  }
+}
 };
 
 if (oc_loop_n >= 1)
 {
-L(oc_loop);
-{
-  xor_(iw_iter, iw_iter);
-  add(iw_iter, new_iw_start);
-  Xbyak::Label iw_loop;
-  
-  L(iw_loop);
+  L(oc_loop);
   {
-    compute(32);
-    add(input_row_address_xb, 6 * sizeof(float));
-    add(output_row_address_xb, 3 * BLOCK * sizeof(float));
-    add(iw_iter, 6);
-    cmp(iw_iter, new_iw);
-    jle(iw_loop,T_NEAR);
-  }
-
-  inc(oc_iter);
+    xor_(iw_iter, iw_iter);
+    add(iw_iter, new_iw_start);
+    Xbyak::Label iw_loop;
   
-  mov(input_row_address_xb , ptr[rdi + 8 * 0]);
-  mov(kernel_address_xb , ptr[rdi + 8 * 1]);
-  mov(output_row_address_xb, ptr[rdi + 8 * 2]);
+    L(iw_loop);
+    {
+      compute(32, wc);
+      add(input_row_address_xb, 6 * sizeof(float));
+      add(output_row_address_xb, 3 * BLOCK * sizeof(float));
+      add(iw_iter, 6);
+      cmp(iw_iter, new_iw);
+      jle(iw_loop,T_NEAR);
+    }
 
-  mov(reg_tmp,whwB * wc * sizeof(float) * 4);
-  imul(reg_tmp, oc_iter);
-  add(kernel_address_xb , reg_tmp);
+    inc(oc_iter);
+  
+    mov(input_row_address_xb , ptr[rdi + 8 * 0]);
+    mov(kernel_address_xb , ptr[rdi + 8 * 1]);
+    mov(output_row_address_xb, ptr[rdi + 8 * 2]);
 
-  // update output_row_address_xb
-  mov(reg_tmp, oh * ow * BLOCK * sizeof(float) * 4);
-  imul(reg_tmp, oc_iter);
-  add(output_row_address_xb, reg_tmp);
+    mov(reg_tmp,whwB * wc * sizeof(float) * 4);
+    imul(reg_tmp, oc_iter);
+    add(kernel_address_xb , reg_tmp);
 
-  cmp(oc_iter, oc_loop_n);
-  jl(oc_loop);
+    // update output_row_address_xb
+    mov(reg_tmp, oh * ow * BLOCK * sizeof(float) * 4);
+    imul(reg_tmp, oc_iter);
+    add(output_row_address_xb, reg_tmp);
+
+    cmp(oc_iter, oc_loop_n);
+    jl(oc_loop);
+  }
 }
-}
-
 
 /* deal with the remain oc*/
 
 if( oc_remain != 0)
 {
-Xbyak::Label iw_loop_ocremain;
-mov(iw_iter, new_iw_start);
+  Xbyak::Label iw_loop_ocremain;
+  mov(iw_iter, new_iw_start);
 
-L(iw_loop_ocremain);
-{
-    compute(oc_remain);
+  L(iw_loop_ocremain);
+  {
+    compute(oc_remain, 8);
     add(input_row_address_xb, 6 * sizeof(float));
     add(output_row_address_xb, 3 * BLOCK * sizeof(float));
     add(iw_iter, 6);
@@ -242,13 +232,11 @@ L(iw_loop_ocremain);
     jle(iw_loop_ocremain,T_NEAR);
   }
 }
-
-
 ret();
 
 }
 
-void conv_direct_3x3s2Code::run(const float* i_data,
+void conv_direct_3x3s2::run(const float* i_data,
                       const float* trans_weight,
                       int bs,
                        int ic,
@@ -325,9 +313,16 @@ void conv_direct_3x3s2Code::run(const float* i_data,
   int whwB = wh * ww * BLOCK;
   int ohw = oh * ow;
   int ochw = oc * oh * ow;
+//  int trans_out_size = oc_expand * ohw;
+
+ // holds the intermediate  HWC output result
+// trans_out = static_cast<float*>(
+//       TargetMalloc(TARGET(kX86), sizeof(float) * trans_out_size));
 
   // fetch bs_i th input feature map
   for (int bs_i = 0; bs_i < bs; bs_i++) {
+    
+  //  memset(trans_out, 0, sizeof(float) * trans_out_size);
 
     // Handle upper boundary！
     // We dealt with the boundary from the beginning
@@ -649,24 +644,41 @@ void conv_direct_3x3s2Code::run(const float* i_data,
       }
     }
 
-
 /*-----------------------new way--------------------------------------*/
 
     const float* input_row_address = i_data + bs_i * ichw + new_iw_start + new_ih_start * iw;
-    float* output_row_address = trans_out + (new_ih_start + ph) / 2 * ow * BLOCK + (new_iw_start + pw) / 2 * BLOCK;
+    float* output_row_address = trans_out + bs_i * ochw + (new_ih_start + ph) / 2 * ow * BLOCK + (new_iw_start + pw) / 2 * BLOCK;
 
     for (int ih_i = new_ih_start; ih_i <= new_ih; ih_i += 2, 
                                    output_row_address += ow * BLOCK,
                                    input_row_address += 2 * iw) {
+      int ic_i = 0;
+      for (; ic_i + 7 < wc; ic_i += 8) {
 
+        int oc_gi = 0;
+        for (; oc_gi + 31 < oc; oc_gi += 32)
+        {
+          
+        }
         jit_param param;
-        param.input_row_address = input_row_address;
-        param.kernel_row_address = trans_weight;
+        param.input_row_address = input_row_address + ic_i * ihw;
+        param.kernel_row_address = trans_weight + ic_i * wh * ww * BLOCK;
         param.output_row_address = output_row_address;
         void (*f)(jit_param*) = reinterpret_cast<void (*)(jit_param*)>(getCodeInternal());
         f(&param);
+        //std::cout << getSize()  << std::endl;
+      }
+        jit_param param;
+        param.input_row_address = input_row_address + ic_i * ihw;
+        param.kernel_row_address = trans_weight + ic_i * wh * ww * BLOCK;
+        param.output_row_address = output_row_address;
+        void (*f)(jit_param*) = reinterpret_cast<void (*)(jit_param*)>(getCodeInternal());
+        std::cout <<getSize() << std::endl;
+        f(&param);
   }
 }
+
+//TargetFree(TARGET(kX86), trans_out);
 
 }
 
@@ -689,7 +701,6 @@ void conv_direct_3x3s2_tranpose_out(int bs,
   int ochw = oc * oh * ow;
   int owB = ow * BLOCK;
 
-
 // we always assume oc % BLOCK == 0!
 // convert trans_out(HWC) to o_data(CHW)!
 // fetch bs_i th input feature map
@@ -697,7 +708,8 @@ void conv_direct_3x3s2_tranpose_out(int bs,
   for (int bs_i = 0; bs_i < bs; bs_i++) {
     for (int oc_gi = 0; oc_gi < oc; oc_gi += BLOCK) {
       for (int oh_i = 0; oh_i < oh; oh_i++) {
-        for (int ow_i = 0; ow_i < ow / BLOCK * BLOCK; ow_i += BLOCK) {
+        int ow_i = 0;
+        for (; ow_i + BLOCK - 1 < ow; ow_i += BLOCK) {
           // trans_out's start_index, we need fetch 8x8 element;
           float* from_address =
               trans_out + bs_i * oc * ohw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
@@ -814,7 +826,7 @@ void conv_direct_3x3s2_tranpose_out(int bs,
 #endif
         }
 
-        for (int ow_i = ow / BLOCK * BLOCK; ow_i < ow; ow_i++) {
+        for (; ow_i < ow; ow_i++) {
           // trans_out
           float* from_address =
               trans_out + bs_i * ochw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;

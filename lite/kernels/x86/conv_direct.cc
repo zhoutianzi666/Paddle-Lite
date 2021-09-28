@@ -50,7 +50,8 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
   int oh = o_dims[2];
   int ow = o_dims[3];
 
-  memset(trans_out_, 0, sizeof(float) * oc * oh * ow * bs);
+  float* trans_out = static_cast<float*>(TargetMalloc(TARGET(kX86), sizeof(float) * bs * oc_expand_ * oh * ow));
+  memset(trans_out, 0, sizeof(float) * oc * oh * ow * bs);
 
   auto act_param = param.activation_param;
   code_->run(i_data,
@@ -62,7 +63,7 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
             oc,
             oc_expand_,
             o_data,
-            trans_out_,
+            trans_out,
             oh,
             ow,
             ph,
@@ -70,9 +71,9 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
             b_data,
             act_param.active_type);
   
-  lite::x86::math::conv_direct_3x3s2_tranpose_out(bs, oc, o_data, trans_out_, oh, ow, b_data,
+  lite::x86::math::conv_direct_3x3s2_tranpose_out(bs, oc, o_data, trans_out, oh, ow, b_data,
                                    act_param.active_type);
-
+  TargetFree(TARGET(kX86), trans_out);
 }
 }  // namespace x86
 }  // namespace kernels

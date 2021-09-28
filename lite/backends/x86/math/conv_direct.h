@@ -20,9 +20,8 @@ namespace lite {
 namespace x86 {
 namespace math {
 
-struct conv_direct_3x3s2Code : lite::jit::gen::JitCode {
-    conv_direct_3x3s2Code
-                        (int ic,
+struct conv_direct_3x3s2 : lite::jit::gen::JitCode {
+    conv_direct_3x3s2(int ic,
                        int ih,
                        int iw,
                        int oc,
@@ -32,7 +31,7 @@ struct conv_direct_3x3s2Code : lite::jit::gen::JitCode {
                        int ph,
                        int pw);
     virtual void genCode() {};
-    virtual ~conv_direct_3x3s2Code() {};
+    virtual ~conv_direct_3x3s2() {};
     void run(const float* i_data,
             const float* trans_weight,
             int bs,

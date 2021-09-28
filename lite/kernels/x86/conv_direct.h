@@ -69,16 +69,15 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
 
     int iw = x_dims[3];
     int ih = x_dims[2];
-    int bs = x_dims[0];
     int oh = o_dims[2];
     int ow = o_dims[3];
 
 
-//    memset(o_data, 0, sizeof(float) * oc * oh * ow * bs);
-      // holds the intermediate  HWC output result
-  trans_out_ = static_cast<float*>(TargetMalloc(TARGET(kX86), sizeof(float) * bs * oc_expand_ * oh * ow));
-  memset(trans_out_, 0, sizeof(float) * bs * oc_expand_ * oh * ow);
-  code_ = new lite::x86::math::conv_direct_3x3s2Code(ic,
+  // memset(o_data, 0, sizeof(float) * oc * oh * ow * bs);
+  // holds the intermediate  HWC output result
+  // trans_out_ = static_cast<float*>(TargetMalloc(TARGET(kX86), sizeof(float) * bs * oc_expand_ * oh * ow));
+  // memset(trans_out_, 0, sizeof(float) * bs * oc_expand_ * oh * ow);
+  code_ = new lite::x86::math::conv_direct_3x3s2(ic,
                                      ih,
                                      iw,
                                      oc,
@@ -108,9 +107,8 @@ class DirectConv : public KernelLite<TARGET(kX86), Ptype> {
   bool flag_trans_bias_{false};
   std::vector<float> w_scale_;
   int oc_expand_;
-  lite::x86::math::conv_direct_3x3s2Code* code_;
-  void (*jit_code_)();
-  float* trans_out_;
+  lite::x86::math::conv_direct_3x3s2* code_;
+  //void (*jit_code_)();
 };
 
 }  // namespace x86
