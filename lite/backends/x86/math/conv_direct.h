@@ -33,29 +33,26 @@ struct conv_direct_3x3s2 : lite::jit::gen::JitCode {
     virtual void genCode() {};
     virtual ~conv_direct_3x3s2() {};
     void run(const float* i_data,
-            const float* trans_weight,
-            int bs,
-            int ic,
-            int ih,
-            int iw,
-            int oc,
-            int oc_expand,
-            float* o_data,
-            float* trans_out,
-            int oh,
-            int ow,
-            int ph,
-            int pw,
-            const float* bias,
-            lite_api::ActivationType active_type);
+             const float* trans_weight,
+             float* trans_out,
+             int bs,
+             int ic,
+             int ih,
+             int iw,
+             int oc,
+             int oc_expand,
+             int oh,
+             int ow,
+             int ph,
+             int pw);
 };
 
 void conv_direct_3x3s2_tranpose_out(int bs,
                        int oc,
-                       float* o_data,
-                       float* trans_out,
                        int oh,
                        int ow,
+                       float* o_data,
+                       float* trans_out,
                        const float* bias,
                        lite_api::ActivationType active_type);
 

@@ -18,11 +18,6 @@ limitations under the License. */
 #include <vector>
 #include "lite/backends/x86/math/conv_utils.h"
 #include "lite/core/context.h"
-#ifdef __AVX__
-#include <immintrin.h>
-#else
-#include <emmintrin.h>
-#endif
 
 #include "lite/backends/x86/jit/gen/jitcode.h"
 
@@ -31,11 +26,14 @@ namespace lite {
 namespace x86 {
 namespace math {
 
+#define GET_OFF(field) offsetof(jit_param, field)
+
 struct  jit_param
 {
   const float* input_row_address;
-  const float* kernel_row_address;
+  const float* kernel_address;
   float* output_row_address;
+  long oc;
 };
 
 conv_direct_3x3s2 ::conv_direct_3x3s2
@@ -57,15 +55,13 @@ conv_direct_3x3s2 ::conv_direct_3x3s2
 
 #ifdef __AVX__
   constexpr int BLOCK = 8;
+#else
+  constexpr int BLOCK = 4;
+#endif
+
   // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
   constexpr int window_h = 3;
   constexpr int window_w = 7;
-
-#else
-  constexpr int BLOCK = 4;
-  constexpr int window_h = 3;
-  constexpr int window_w = 7;
-#endif
 
   // The maximum value of the upper left corner of the
   // sliding window in h dimension
@@ -73,6 +69,7 @@ conv_direct_3x3s2 ::conv_direct_3x3s2
   int new_iw;
   int new_ih_start;
   int new_iw_start;
+
   if (ph == 0 && pw == 0) {
     // 4 is the stride_h of sliding window
     // 6 is the stride_w of sliding window
@@ -92,43 +89,45 @@ conv_direct_3x3s2 ::conv_direct_3x3s2
   // // The number of channels of convolution kernel
   // // and the number of input channels are always the same !
   int wc = ic;
-
   int ihw = ih * iw;
   int wchw = wc * wh * ww;
   int whwB = wh * ww * BLOCK;
   int ohw = oh * ow;
  
   using reg64_t = const Xbyak::Reg64;
-
   reg64_t iw_iter  = rax;
-  reg64_t oc_iter  = rcx;
-
-  reg64_t input_row_address_xb  = r8; mov(input_row_address_xb , ptr[rdi + 8 * 0]);
-  reg64_t kernel_address_xb = r9;     mov(kernel_address_xb , ptr[rdi + 8 * 1]);
-  reg64_t output_row_address_xb = r10;mov(output_row_address_xb, ptr[rdi + 8 * 2]);
+  reg64_t input_row_address_xb  = r8; mov(input_row_address_xb , ptr[param1 + GET_OFF(input_row_address)]);
+  reg64_t kernel_address_xb = r9;     mov(kernel_address_xb , ptr[param1 + GET_OFF(kernel_address)]);
+  reg64_t output_row_address_xb = r10;mov(output_row_address_xb, ptr[param1 + GET_OFF(output_row_address)]);
+  reg64_t oc_xb  = rcx; mov(oc_xb, ptr[param1 + GET_OFF(oc)]);
   // 上面三个是非常重要的东西
   // 其中input_start_address是从new_ih_start开始的哦!
   // output_start_address_xb肯定不是从0开始的哈！
 
-  reg64_t reg_tmp = r11;
 
-  Xbyak::Label oc_loop; 
   int oc_loop_n = oc_expand / 32; // every 32 output channels are a loop
   int oc_remain = oc_expand % 32;
-  xor_(oc_iter, oc_iter);
   int temp;
+  preCode();
 
- auto compute = [=,&temp](int oc_group, int ic_group) {
+  auto compute = [=,&temp](int oc_group, int ic_group) {
   
   constexpr int unrowll_ow = 3;
-  for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
+
+  Xbyak::Label iw_loop;
+  mov(iw_iter, new_iw_start);
+  L(iw_loop);
+  {
+
+  for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) 
+  {
     for (int j = 0; j < unrowll_ow; j++)
       {
         Xbyak::Ymm res(oc_gi / BLOCK * unrowll_ow + j);
         temp = (oc_gi * ohw + j * BLOCK) * sizeof(float);
         vmovups(res, ptr[output_row_address_xb + temp]);
       }
-    }
+  }
 
 // 这里开始处理这6个输入数字和卷积核心的卷积！
 for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先展开一下吧！
@@ -166,109 +165,84 @@ for (int wh_i = 0; wh_i < wh; wh_i ++){// oneDNN 是不展开的！, 这里先�
  }
 }
 
-// 这里需要store输出了哦！12个输出!
-for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) {
-  for (int j = 0; j < unrowll_ow; j++)
+  // 这里需要store输出了哦！12个输出!
+  for (int oc_gi = 0; oc_gi < oc_group; oc_gi += BLOCK) 
   {
-    Xbyak::Ymm res(oc_gi / BLOCK * unrowll_ow + j);
-    temp = (oc_gi * ohw + j * BLOCK) * sizeof(float);
-    vmovups(ptr[output_row_address_xb + temp], res);
+    for (int j = 0; j < unrowll_ow; j++)
+    {
+      Xbyak::Ymm res(oc_gi / BLOCK * unrowll_ow + j);
+      temp = (oc_gi * ohw + j * BLOCK) * sizeof(float);
+      vmovups(ptr[output_row_address_xb + temp], res);
+    }
   }
-}
+
+  add(input_row_address_xb, 6 * sizeof(float));
+  add(output_row_address_xb, 3 * BLOCK * sizeof(float));
+  add(iw_iter, 6);
+  cmp(iw_iter, new_iw);
+  jle(iw_loop,T_NEAR);
+  
+  }
 };
 
-if (oc_loop_n >= 1)
+Xbyak::Label iw_loop_ocremain; 
+Xbyak::Label label_oc_remain;
+Xbyak::Label done; 
+if (oc_loop_n >= 1 && oc_remain == 0)
 {
-  L(oc_loop);
-  {
-    xor_(iw_iter, iw_iter);
-    add(iw_iter, new_iw_start);
-    Xbyak::Label iw_loop;
-  
-    L(iw_loop);
-    {
-      compute(32, wc);
-      add(input_row_address_xb, 6 * sizeof(float));
-      add(output_row_address_xb, 3 * BLOCK * sizeof(float));
-      add(iw_iter, 6);
-      cmp(iw_iter, new_iw);
-      jle(iw_loop,T_NEAR);
-    }
+  compute(32, 1);
+}
+else if(oc_loop_n >=1 && oc_remain != 0)
+{
+  cmp(oc_xb, 32);
+  jne(label_oc_remain, T_NEAR);
 
-    inc(oc_iter);
-  
-    mov(input_row_address_xb , ptr[rdi + 8 * 0]);
-    mov(kernel_address_xb , ptr[rdi + 8 * 1]);
-    mov(output_row_address_xb, ptr[rdi + 8 * 2]);
+  compute(32, 1);
+  jmp(done, T_NEAR);
 
-    mov(reg_tmp,whwB * wc * sizeof(float) * 4);
-    imul(reg_tmp, oc_iter);
-    add(kernel_address_xb , reg_tmp);
-
-    // update output_row_address_xb
-    mov(reg_tmp, oh * ow * BLOCK * sizeof(float) * 4);
-    imul(reg_tmp, oc_iter);
-    add(output_row_address_xb, reg_tmp);
-
-    cmp(oc_iter, oc_loop_n);
-    jl(oc_loop);
-  }
+  L(label_oc_remain);
+  compute(oc_remain, 1);
+}
+else
+{
+  compute(oc_remain, 1);
 }
 
-/* deal with the remain oc*/
-
-if( oc_remain != 0)
-{
-  Xbyak::Label iw_loop_ocremain;
-  mov(iw_iter, new_iw_start);
-
-  L(iw_loop_ocremain);
-  {
-    compute(oc_remain, 8);
-    add(input_row_address_xb, 6 * sizeof(float));
-    add(output_row_address_xb, 3 * BLOCK * sizeof(float));
-    add(iw_iter, 6);
-    cmp(iw_iter, new_iw);
-    jle(iw_loop_ocremain,T_NEAR);
-  }
-}
-ret();
+L(done);
+postCode();
 
 }
 
 void conv_direct_3x3s2::run(const float* i_data,
                       const float* trans_weight,
+                      float* trans_out,
                       int bs,
                        int ic,
                        int ih,
                        int iw,
                        int oc,
                        int oc_expand,
-                       float* o_data,
-                       float* trans_out,
                        int oh,
                        int ow,
                        int ph,
-                       int pw,
-                       const float* bias,
-                       lite_api::ActivationType active_type)
+                       int pw)
 {
+
+#ifdef __AVX__
+  constexpr int BLOCK = 8;
+#else
+  constexpr int BLOCK = 4;
+#endif
+
   constexpr int ww = 3;
   constexpr int wh = 3;
   constexpr int strideh = 2;
   constexpr int stridew = 2;
 
-#ifdef __AVX__
-  constexpr int BLOCK = 8;
-  // the sliding window is 3x7 and can obtain 1x3 results！ for AVX
   constexpr int window_h = 3;
   constexpr int window_w = 7;
-
-#else
-  constexpr int BLOCK = 4;
-  constexpr int window_h = 3;
-  constexpr int window_w = 7;
-#endif
+  constexpr int stride_window_h = 2;
+  constexpr int stride_window_w = 6;
 
   // The maximum value of the upper left corner of the
   // sliding window in h dimension
@@ -277,34 +251,29 @@ void conv_direct_3x3s2::run(const float* i_data,
   int new_ih_start;
   int new_iw_start;
   if (ph == 0 && pw == 0) {
-    // 4 is the stride_h of sliding window
-    // 6 is the stride_w of sliding window
-    new_ih = (ih - window_h) / 2 * 2;
-    new_iw = (iw - window_w) / 6 * 6;
+    new_ih = (ih - window_h) / stride_window_h * stride_window_h;
+    new_iw = (iw - window_w) / stride_window_w * stride_window_w;
     new_ih_start = 0;
     new_iw_start = 0;
-
   } else if (ph == 1 && pw == 1) {
-    new_ih = (ih - window_h - 1) / 2 * 2 + 1;
-    new_iw = (iw - window_w - 1) / 6 * 6 + 1;
+    new_ih = (ih - window_h - 1) / stride_window_h * stride_window_h + 1;
+    new_iw = (iw - window_w - 1) / stride_window_w * stride_window_w + 1;
     new_ih_start = 1;
     new_iw_start = 1;
-    
   } else {
     LOG(FATAL) << "[X86] conv_direct only support 3x3s2 with padding = 0 or 1";
   }
 
   // [0,o_left) in output map needs Special treatment (Left boundary)
-  // [o_right, ow) in output map needs Special treatment (Right boundary)
-  // [0,o_upper) same as above (Upper boundary)
-  // [o_down, oh) same as above (Lower boundary)
-  int o_left = (new_iw_start + pw) / 2;
-  int o_right = (new_iw + pw) / 2 + 3;
-  int o_upper = (new_ih_start + ph) / 2;
-  int o_down = (new_ih + ph) / 2 + 1;
-  //std::cout << o_right << std::endl;
-  // The number of channels of convolution kernel
-  // and the number of input channels are always the same !
+  // [o_right, ow) in output map needs Special treatment (Right)
+  // [0,o_upper) same as above (Upper)
+  // [o_down, oh) same as above (Lower)
+  int o_left = (new_iw_start + pw) / stridew;
+  int o_right = (new_iw + pw) / stridew + 3;
+  int o_upper = (new_ih_start + ph) / strideh;
+  int o_down = (new_ih + ph) / strideh + 1;
+
+  // The number of channels of convolution kernel and ic are always the same !
   int wc = ic;
 
   int ichw = ic * ih * iw;
@@ -313,16 +282,9 @@ void conv_direct_3x3s2::run(const float* i_data,
   int whwB = wh * ww * BLOCK;
   int ohw = oh * ow;
   int ochw = oc * oh * ow;
-//  int trans_out_size = oc_expand * ohw;
-
- // holds the intermediate  HWC output result
-// trans_out = static_cast<float*>(
-//       TargetMalloc(TARGET(kX86), sizeof(float) * trans_out_size));
 
   // fetch bs_i th input feature map
   for (int bs_i = 0; bs_i < bs; bs_i++) {
-    
-  //  memset(trans_out, 0, sizeof(float) * trans_out_size);
 
     // Handle upper boundary！
     // We dealt with the boundary from the beginning
@@ -406,7 +368,7 @@ void conv_direct_3x3s2::run(const float* i_data,
       }
     }
 
-    // Handle lower boundary！
+    // lower boundary！
     for (int oh_i = o_down; oh_i < oh; oh_i++) {
       for (int ow_i = 0; ow_i < ow; ow_i++) {
         int ih_i = oh_i * strideh - ph;
@@ -483,7 +445,7 @@ void conv_direct_3x3s2::run(const float* i_data,
       }
     }
 
-    // Handle left boundary！
+    // left boundary！
     for (int oh_i = 0; oh_i < oh; oh_i++) {
       if ((oh_i >= 0 && oh_i < o_upper) || (oh_i >= o_down && oh_i < oh))
         continue;
@@ -564,7 +526,7 @@ void conv_direct_3x3s2::run(const float* i_data,
       }
     }
 
-    // Handle right boundary！
+    // right boundary！
     for (int oh_i = 0; oh_i < oh; oh_i++) {
       if ((oh_i >= 0 && oh_i < o_upper) || (oh_i >= o_down && oh_i < oh))
         continue;
@@ -618,7 +580,6 @@ void conv_direct_3x3s2::run(const float* i_data,
                 // vmovups(w_xb, yword[pointer]);
                 // vfmadd231ps(res_xb, input_xb, w_xb);
 
-
                 __m256 input = _mm256_set1_ps(*input_address);
                 __m256 w =
                     _mm256_loadu_ps(kernel_start_address + (i * 3 + j) * BLOCK);
@@ -653,41 +614,31 @@ void conv_direct_3x3s2::run(const float* i_data,
                                    output_row_address += ow * BLOCK,
                                    input_row_address += 2 * iw) {
       int ic_i = 0;
-      for (; ic_i + 7 < wc; ic_i += 8) {
+      for (; ic_i < ic; ic_i ++) {
 
-        int oc_gi = 0;
-        for (; oc_gi + 31 < oc; oc_gi += 32)
+        for (int oc_gi = 0; oc_gi < oc; oc_gi += 32)
         {
-          
+          jit_param param;
+          param.input_row_address = input_row_address + ic_i * ihw;
+          param.kernel_address = trans_weight + oc_gi / 8 * whwB * wc + ic_i * whwB;
+          param.output_row_address = output_row_address + oc_gi * oh * ow;
+          param.oc = oc_gi + 31 < oc ? 32 : oc - oc_gi;
+          void (*f)(jit_param*) = reinterpret_cast<void (*)(jit_param*)>(getCodeInternal());
+          f(&param);
         }
-        jit_param param;
-        param.input_row_address = input_row_address + ic_i * ihw;
-        param.kernel_row_address = trans_weight + ic_i * wh * ww * BLOCK;
-        param.output_row_address = output_row_address;
-        void (*f)(jit_param*) = reinterpret_cast<void (*)(jit_param*)>(getCodeInternal());
-        f(&param);
-        //std::cout << getSize()  << std::endl;
       }
-        jit_param param;
-        param.input_row_address = input_row_address + ic_i * ihw;
-        param.kernel_row_address = trans_weight + ic_i * wh * ww * BLOCK;
-        param.output_row_address = output_row_address;
-        void (*f)(jit_param*) = reinterpret_cast<void (*)(jit_param*)>(getCodeInternal());
-        std::cout <<getSize() << std::endl;
-        f(&param);
   }
 }
-
-//TargetFree(TARGET(kX86), trans_out);
-
 }
 
+// we always assume oc % BLOCK == 0!
+// convert [N C/8 H W 8] to [N C H W]!
 void conv_direct_3x3s2_tranpose_out(int bs,
                        int oc,
-                       float* o_data,
-                       float* trans_out,
                        int oh,
                        int ow,
+                       float* o_data,
+                       float* trans_out,
                        const float* bias,
                        lite_api::ActivationType active_type){ 
 
@@ -699,20 +650,20 @@ void conv_direct_3x3s2_tranpose_out(int bs,
 
   int ohw = oh * ow;
   int ochw = oc * oh * ow;
-  int owB = ow * BLOCK;
 
-// we always assume oc % BLOCK == 0!
-// convert trans_out(HWC) to o_data(CHW)!
 // fetch bs_i th input feature map
 
   for (int bs_i = 0; bs_i < bs; bs_i++) {
     for (int oc_gi = 0; oc_gi < oc; oc_gi += BLOCK) {
+      
+      // trans_out's start_index, we need fetch 8x8 element;
+      float* from_address = trans_out + bs_i * oc * ohw + oc_gi * ohw;
+      float* dst_address =  o_data + bs_i * ochw + oc_gi * ohw;
+      
       for (int oh_i = 0; oh_i < oh; oh_i++) {
         int ow_i = 0;
-        for (; ow_i + BLOCK - 1 < ow; ow_i += BLOCK) {
-          // trans_out's start_index, we need fetch 8x8 element;
-          float* from_address =
-              trans_out + bs_i * oc * ohw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
+
+        for (; ow_i + BLOCK - 1 < ow; ow_i += BLOCK, from_address += BLOCK * BLOCK, dst_address += BLOCK) {
 
 #ifdef __AVX__
           __m256 row0 = _mm256_loadu_ps(from_address + 0 * BLOCK);
@@ -807,8 +758,6 @@ void conv_direct_3x3s2_tranpose_out(int bs,
             LOG(FATAL) << "[X86] unsupported Activation type";
           }
 
-          float* dst_address =
-              o_data + bs_i * ochw + oc_gi * ohw + oh_i * ow + ow_i;
 #ifdef __AVX__
           _mm256_storeu_ps(dst_address + 0 * ohw, row0);
           _mm256_storeu_ps(dst_address + 1 * ohw, row1);
@@ -826,12 +775,8 @@ void conv_direct_3x3s2_tranpose_out(int bs,
 #endif
         }
 
-        for (; ow_i < ow; ow_i++) {
-          // trans_out
-          float* from_address =
-              trans_out + bs_i * ochw + oc_gi * ohw + oh_i * owB + ow_i * BLOCK;
-          float* dst_address =
-              o_data + bs_i * ochw + oc_gi * ohw + oh_i * ow + ow_i;
+        for (; ow_i < ow; ow_i++, from_address += BLOCK, dst_address += 1) {
+
 #ifdef __AVX__
           __m256 row = _mm256_loadu_ps(from_address);
 #else

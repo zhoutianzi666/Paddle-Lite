@@ -310,8 +310,8 @@ void TestConvStrides(Place place, float abs_error = 2e-5) {
 }
 
 void TestConvPaddings(Place place, float abs_error = 2e-5) {
-  for (auto dims : std::vector<std::vector<int64_t>>{{1, 3, 224, 224}}) {
-    for (auto out_channels : {32}) {
+  for (auto dims : std::vector<std::vector<int64_t>>{{1, 3, 222, 222}}) {
+    for (auto out_channels : {48}) {
       for (auto paddings : std::vector<std::vector<int>>{{1, 1}}) {
         std::unique_ptr<arena::TestCase> tester(new ConvComputeTester(
             place, "def", DDim(dims), out_channels, 3, {2, 2}, paddings));

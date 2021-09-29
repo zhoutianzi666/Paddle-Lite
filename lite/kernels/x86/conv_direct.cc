@@ -56,22 +56,19 @@ void DirectConv<PRECISION(kFloat), PRECISION(kFloat)>::Run() {
   auto act_param = param.activation_param;
   code_->run(i_data,
             weights_.data<float>(),
+            trans_out,
             bs,
             ic,
             ih,
             iw,
             oc,
             oc_expand_,
-            o_data,
-            trans_out,
             oh,
             ow,
             ph,
-            pw,
-            b_data,
-            act_param.active_type);
+            pw);
   
-  lite::x86::math::conv_direct_3x3s2_tranpose_out(bs, oc, o_data, trans_out, oh, ow, b_data,
+  lite::x86::math::conv_direct_3x3s2_tranpose_out(bs, oc, oh, ow, o_data, trans_out, b_data,
                                    act_param.active_type);
   TargetFree(TARGET(kX86), trans_out);
 }
