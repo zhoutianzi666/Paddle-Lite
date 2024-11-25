@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef LITE_KERNELS_METAL_IMAGE_OP_PIXEL_SHUFFLE_IMAGE_COMPUTE_H_
-#define LITE_KERNELS_METAL_IMAGE_OP_PIXEL_SHUFFLE_IMAGE_COMPUTE_H_
+#ifndef LITE_KERNELS_METAL_IMAGE_OP_PIXEL_UNSHUFFLE_IMAGE_COMPUTE_H_
+#define LITE_KERNELS_METAL_IMAGE_OP_PIXEL_UNSHUFFLE_IMAGE_COMPUTE_H_
 
 #include <memory>
 
@@ -33,19 +33,24 @@ namespace lite {
 namespace kernels {
 namespace metal {
 
-class PixelShuffleImageCompute
+class PixelUnShuffleImageCompute
     : public KernelLite<TARGET(kMetal), PRECISION(kFloat), DATALAYOUT(kMetalTexture2DArray)> {
-    using param_t = operators::PixelShuffleParam;
+    using param_t = operators::PixelUnShuffleParam;
 
    public:
     void PrepareForRun() override;
     void Run() override;
     void SaveOutput() override {
-        MetalDebug::SaveOutput("pixel_shuffle", output_buffer_);
+        MetalDebug::SaveOutput("pixel_unshuffle", output_buffer_);
     };
-    virtual ~PixelShuffleImageCompute();
+    virtual ~PixelUnShuffleImageCompute();
 
    private:
+    bool use_mps_{false};
+    void* mps_pool_op_{nullptr};
+    void* mps_input_image_{nullptr};
+    void* mps_output_image_{nullptr};
+
     void run_without_mps();
     void setup_without_mps();
 
@@ -62,4 +67,5 @@ class PixelShuffleImageCompute
 }  // namespace kernels
 }  // namespace lite
 }  // namespace paddle
-#endif LITE_KERNELS_METAL_IMAGE_OP_PIXEL_SHUFFLE_IMAGE_COMPUTE_H_
+
+#endif LITE_KERNELS_METAL_IMAGE_OP_PIXEL_UNSHUFFLE_IMAGE_COMPUTE_H_

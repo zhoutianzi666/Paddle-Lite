@@ -12,33 +12,36 @@
  See the License for the specific language governing permissions and
  limitations under the License. */
 
-#include <metal_stdlib>
-
 #include "Common.metal"
+#include <metal_stdlib>
 using namespace metal;
 
-kernel void pixel_shuffle(texture2d_array<ftype, access::sample> inTexture[[texture(0)]],
+kernel void pixel_unshuffle(texture2d_array<ftype, access::sample> inTexture[[texture(0)]],
     texture2d_array<ftype, access::write> outTexture[[texture(1)]],
-    constant PixelShuffleParam& param[[buffer(0)]],
+    constant PixelUnShuffleParam& param[[buffer(0)]],
     uint3 gid[[thread_position_in_grid]]) {
     if (gid.x >= outTexture.get_width() || gid.y >= outTexture.get_height() ||
         gid.z >= outTexture.get_array_size())
         return;
-    constexpr sampler s(coord::pixel, filter::nearest, address::clamp_to_zero);
 
+    int downscale_factor = param.downscale_factor;
+    int outX = gid.x * downscale_factor;
+    int outY = gid.y * downscale_factor;
 
-    int upscale_factor = param.upscale_factor;
-    int inX = gid.x / upscale_factor;
-    int inY = gid.y / upscale_factor;
+    ftype4 res = ftype4(0.0);
 
-    ftype4 res;
     for (int i = 0; i < 4; i++) {
         int c = gid.z * 4 + i;
-        int inC = c * upscale_factor * upscale_factor + (gid.y % upscale_factor) * upscale_factor +
-                  gid.x % upscale_factor;
-        ftype4 input = inTexture.read(uint2(inX, inY), inC / 4);
-        res[i] = input[inC % 4];
-    }
+        int outC = c / (downscale_factor * downscale_factor);
+        int offset = c % (downscale_factor * downscale_factor);
+        int offset_h = offset / downscale_factor;
+        int offset_w = offset % downscale_factor;
 
+        int readX = outX + offset_w;
+        int readY = outY + offset_h;
+
+        ftype4 input = inTexture.read(uint2(readX, readY), outC / 4);
+        res[i] = input[outC % 4];
+    }
     outTexture.write(res, gid.xy, gid.z);
 }

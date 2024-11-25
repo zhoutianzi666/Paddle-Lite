@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "lite/kernels/metal/image_op/pixel_shuffle_image_compute.h"
+#include "lite/kernels/metal/image_op/pixel_unshuffle_image_compute.h"
 #include "lite/backends/metal/metal_context_imp.h"
+#include "lite/backends/metal/metal_debug.h"
 #include "lite/core/op_registry.h"
 #include "lite/core/tensor.h"
 #include "lite/kernels/metal/image_op/metal_params.h"
@@ -23,7 +24,7 @@ namespace lite {
 namespace kernels {
 namespace metal {
 
-void PixelShuffleImageCompute::PrepareForRun() {
+void PixelUnShuffleImageCompute::PrepareForRun() {
     auto& context = ctx_->As<MTLContext>();
     metal_context_ = (MetalContext*)context.context();
 
@@ -38,13 +39,13 @@ void PixelShuffleImageCompute::PrepareForRun() {
     setup_without_mps();
 }
 
-void PixelShuffleImageCompute::Run() {
+void PixelUnShuffleImageCompute::Run() {
     @autoreleasepool {
         run_without_mps();
     }
 }
 
-void PixelShuffleImageCompute::run_without_mps() {
+void PixelUnShuffleImageCompute::run_without_mps() {
     auto pipline = pipline_;
     auto outTexture = output_buffer_->image();
     auto backend = (__bridge MetalContextImp*)metal_context_->backend();
@@ -58,18 +59,18 @@ void PixelShuffleImageCompute::run_without_mps() {
     [backend commit];
 }
 
-void PixelShuffleImageCompute::setup_without_mps() {
+void PixelUnShuffleImageCompute::setup_without_mps() {
     const auto& param = this->Param<param_t>();
 
-    PixelShuffleMetalParam params{param.upscale_factor};
+    PixelShuffleMetalParam params{param.downscale_factor};
     params_buffer_ = std::make_shared<MetalBuffer>(metal_context_, sizeof(params), &params);
-    function_name_ = "pixel_shuffle";
+    function_name_ = "pixel_unshuffle";
     // pipline
     auto backend = (__bridge MetalContextImp*)metal_context_->backend();
     pipline_ = [backend pipline:function_name_];
 }
 
-PixelShuffleImageCompute::~PixelShuffleImageCompute() {
+PixelUnShuffleImageCompute::~PixelUnShuffleImageCompute() {
     TargetWrapperMetal::FreeImage(output_buffer_);
 }
 
@@ -78,11 +79,11 @@ PixelShuffleImageCompute::~PixelShuffleImageCompute() {
 }  // namespace lite
 }  // namespace paddle
 
-REGISTER_LITE_KERNEL(pixel_shuffle,
+REGISTER_LITE_KERNEL(pixel_unshuffle,
     kMetal,
     kFloat,
     kMetalTexture2DArray,
-    paddle::lite::kernels::metal::PixelShuffleImageCompute,
+    paddle::lite::kernels::metal::PixelUnShuffleImageCompute,
     def)
     .BindInput("X",
         {LiteType::GetTensorTy(TARGET(kMetal),
@@ -94,11 +95,11 @@ REGISTER_LITE_KERNEL(pixel_shuffle,
             DATALAYOUT(kMetalTexture2DArray))})
     .Finalize();
 
-REGISTER_LITE_KERNEL(pixel_shuffle,
+REGISTER_LITE_KERNEL(pixel_unshuffle,
     kMetal,
     kFP16,
     kMetalTexture2DArray,
-    paddle::lite::kernels::metal::PixelShuffleImageCompute,
+    paddle::lite::kernels::metal::PixelUnShuffleImageCompute,
     def)
     .BindInput("X",
         {LiteType::GetTensorTy(TARGET(kMetal), PRECISION(kFP16), DATALAYOUT(kMetalTexture2DArray))})
