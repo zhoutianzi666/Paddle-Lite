@@ -139,6 +139,8 @@ __kernel void pixel_unshuffle(__read_only image2d_t input_image,
     res.w = in.w;
   }
 
+  in_pos.x = in_c4 * (in_W / downscale_factor) + in_w;
+  in_pos.y = in_nh;
   if (in_pos.x < out_W * ((out_C + 3) / 4) && in_pos.y < out_H * out_N) {
     WRITE_IMG_TYPE(CL_DTYPE_CHAR, output_image, in_pos, res);
   }
